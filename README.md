@@ -123,4 +123,5 @@ diffraction on this sensor; focus stacking gives more depth of field instead.
 
 ## License
 
-focus-stack © Petteri Aimonen, MIT license (see `vendor/focus-stack/LICENSE.md`).
+MIT — see [LICENSE](LICENSE).
+The bundled focus-stack is © Petteri Aimonen, also MIT (see `vendor/focus-stack/LICENSE.md`).
