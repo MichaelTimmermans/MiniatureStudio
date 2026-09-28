@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MiniCamera</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <h1>MiniCamera</h1>
+  <div id="badges"></div>
+</header>
+
+<main>
+  <section id="preview-pane">
+    <div id="preview-wrap">
+      <img id="preview" src="/stream.mjpg" alt="Live preview">
+      <div id="grid-overlay" hidden></div>
+      <div id="focus-marker" hidden></div>
+    </div>
+    <div class="row small">
+      <label><input type="checkbox" id="toggle-grid"> Raster</label>
+      <label><input type="checkbox" id="toggle-focus"> Focuscontrole (100% crop)</label>
+      <span class="muted">Klik in de preview om het focuspunt te kiezen</span>
+    </div>
+    <div id="focus-check" hidden>
+      <img id="focus-crop" alt="Focus crop">
+      <div>Scherpte: <strong id="sharpness">–</strong> <span class="muted">(hoger = scherper, max <span id="sharpness-max">–</span>)</span></div>
+    </div>
+  </section>
+
+  <section id="side">
+    <nav id="tabs">
+      <button data-tab="capture" class="active">Opname</button>
+      <button data-tab="controls">Camera</button>
+      <button data-tab="stacks">Stacks</button>
+      <button data-tab="gallery">Galerij</button>
+      <button data-tab="jobs">Jobs</button>
+      <button data-tab="settings">Instellingen</button>
+    </nav>
+
+    <!-- Capture -->
+    <div class="tab" id="tab-capture">
+      <label class="block">Label <input id="label" placeholder="bv. space_marine_sergeant"></label>
+      <div class="muted small">Naam-voorbeeld: <code id="name-example"></code></div>
+
+      <h3>Foto</h3>
+      <button id="btn-photo" class="primary">📷 Foto <kbd>P</kbd></button>
+
+      <h3>Focus stack — manueel</h3>
+      <div class="row">
+        <button id="btn-stack-start">Start stack</button>
+        <button id="btn-stack-frame" disabled>+ Frame <kbd>Spatie</kbd></button>
+        <button id="btn-stack-end" disabled>Einde</button>
+      </div>
+      <label class="small" id="stack-autoprocess-label"><input type="checkbox" id="stack-autoprocess" checked> Na einde meteen verwerken</label>
+
+      <div id="sweep-box" hidden>
+        <h3>Focus stack — automatische lens-sweep</h3>
+        <div class="grid2">
+          <label>Start LensPosition <input type="number" step="0.05" id="sweep-start"></label>
+          <label>Einde LensPosition <input type="number" step="0.05" id="sweep-end"></label>
+          <label>Stappen <input type="number" min="2" max="200" id="sweep-steps"></label>
+          <label>Wachttijd (ms) <input type="number" min="0" step="50" id="sweep-settle"></label>
+        </div>
+        <div class="row">
+          <button id="btn-sweep-from">Huidige → start</button>
+          <button id="btn-sweep-to">Huidige → einde</button>
+        </div>
+        <div class="muted small">De frames worden na de sweep automatisch gestackt.</div>
+        <div class="muted small">LensPosition in dioptrie: 0 = oneindig, hoger = dichterbij. Huidig: <span id="lens-now">–</span></div>
+        <div class="row">
+          <button id="btn-sweep" class="primary">▶ Start sweep</button>
+          <button id="btn-sweep-cancel" hidden>Annuleren</button>
+        </div>
+      </div>
+
+      <h3>Video</h3>
+      <div class="row">
+        <button id="btn-video">⏺ Start video</button>
+        <span id="video-timer"></span>
+      </div>
+
+      <div id="stack-status" class="status"></div>
+      <div id="message" class="status"></div>
+    </div>
+
+    <!-- Controls -->
+    <div class="tab" id="tab-controls" hidden>
+      <div class="row">
+        <label>Camera <select id="camera-select"></select></label>
+        <span class="muted small">Automatisch gedetecteerd bij opstart — nieuwe camera aansluiten met de Pi uit.</span>
+      </div>
+      <div class="row">
+        <input id="control-filter" placeholder="Filter controls…">
+        <button id="btn-af" hidden>Autofocus</button>
+        <button id="btn-controls-reset">Alles resetten</button>
+      </div>
+      <div id="live" class="small"></div>
+      <div id="controls"></div>
+    </div>
+
+    <!-- Stacks -->
+    <div class="tab" id="tab-stacks" hidden>
+      <div class="row"><button id="btn-stacks-refresh">Vernieuwen</button></div>
+      <div id="stacks"></div>
+    </div>
+
+    <!-- Gallery -->
+    <div class="tab" id="tab-gallery" hidden>
+      <div class="row">
+        <button id="btn-gallery-refresh">Vernieuwen</button>
+      </div>
+      <h3>Foto's</h3>
+      <div id="photos" class="gallery"></div>
+      <h3>Video's</h3>
+      <div id="videos"></div>
+    </div>
+
+    <!-- Jobs -->
+    <div class="tab" id="tab-jobs" hidden>
+      <div id="jobs"></div>
+    </div>
+
+    <!-- Settings -->
+    <div class="tab" id="tab-settings" hidden>
+      <fieldset>
+        <legend>Versie &amp; updates</legend>
+        <div class="row">
+          <span>Versie: <code id="version">–</code></span>
+          <button id="btn-update-check">Controleer op updates</button>
+          <button id="btn-update-apply" class="primary" hidden>Update installeren</button>
+        </div>
+        <div id="update-info" class="small"></div>
+      </fieldset>
+      <form id="settings-form"></form>
+      <div class="row"><button id="btn-settings-save" class="primary">Opslaan</button></div>
+      <div id="settings-message" class="status"></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="viewer">
+  <div class="viewer-bar">
+    <span id="viewer-title"></span>
+    <span>
+      <a id="viewer-download" download>Download</a>
+      <button id="viewer-close">Sluiten</button>
+    </span>
+  </div>
+  <div id="viewer-body"></div>
+</dialog>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+[submodule "vendor/focus-stack"]
+	path = vendor/focus-stack
+	url = https://github.com/PetteriAimonen/focus-stack.git

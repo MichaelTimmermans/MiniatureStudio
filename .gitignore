@@ -1,0 +1,8 @@
+config.json
+config.json.tmp
+photos/
+stacks/
+videos/
+__pycache__/
+*.pyc
+.venv/

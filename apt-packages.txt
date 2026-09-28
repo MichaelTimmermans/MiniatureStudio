@@ -1,0 +1,12 @@
+# Debian / Raspberry Pi OS packages MiniCamera needs.
+# install.sh and update.sh install these; one package per line.
+python3-picamera2
+python3-flask
+python3-pil
+python3-numpy
+git
+build-essential
+pkg-config
+libopencv-dev
+ffmpeg
+rclone

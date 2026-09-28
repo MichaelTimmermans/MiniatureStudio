@@ -1,0 +1,62 @@
+{
+  "server": {"host": "0.0.0.0", "port": 8000},
+  "paths": {"photos": "photos", "stacks": "stacks", "videos": "videos"},
+  "filename_pattern": "{dt:%Y%m%d_%H%M%S}_{label}",
+  "next_seq": 1,
+  "image_format": "png",
+  "png_compress_level": 3,
+  "jpeg_quality": 95,
+  "save_metadata": true,
+  "persist_controls": true,
+  "controls": {},
+  "camera": {
+    "index": 0,
+    "still_size": null,
+    "preview_size": [1024, 768],
+    "buffer_count": 2
+  },
+  "video": {
+    "size": [1920, 1080],
+    "preview_size": [768, 432],
+    "bitrate": 10000000
+  },
+  "focus_stack": {
+    "binary": "",
+    "output_format": "png",
+    "consistency": 2,
+    "denoise": 1.0,
+    "threads": 2,
+    "batchsize": 4,
+    "jpgquality": 100,
+    "reference": "",
+    "remove_bg": "",
+    "global_align": false,
+    "full_resolution_align": false,
+    "no_whitebalance": false,
+    "no_contrast": false,
+    "no_transform": false,
+    "no_align": false,
+    "align_keep_size": false,
+    "nocrop": false,
+    "no_opencl": true,
+    "depthmap": false,
+    "view3d": false,
+    "verbose": false,
+    "extra_args": "",
+    "delete_frames": true
+  },
+  "sweep": {
+    "start": 2.0,
+    "end": 6.0,
+    "steps": 10,
+    "settle_ms": 400
+  },
+  "upload": {
+    "auto_drive": true,
+    "auto_nas": false,
+    "rclone_remote": "gdrive:MiniCamera",
+    "nas_path": "/mnt/nas/minicamera",
+    "nas_require_mount": true,
+    "stack_frames": false
+  }
+}

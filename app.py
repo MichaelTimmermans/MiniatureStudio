@@ -1,0 +1,1592 @@
+#!/usr/bin/env python3
+"""Miniature Photo Booth — Flask + picamera2 web app.
+
+Single global camera backend guarded by ``camera_lock``. Still configuration is
+dual-stream (``main`` = full sensor resolution for captures, ``lores`` = MJPEG
+preview), so photos never interrupt the live preview. Video temporarily
+reconfigures the camera. Focus stacking uses the vendored focus-stack binary
+(vendor/focus-stack) in a background job.
+"""
+import atexit
+import io
+import json
+import logging
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import threading
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+from flask import Flask, Response, abort, jsonify, render_template, request, send_file
+
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = BASE_DIR / "config.json"
+EXAMPLE_CONFIG_PATH = BASE_DIR / "config.example.json"
+VENDORED_FOCUS_STACK = BASE_DIR / "vendor" / "focus-stack" / "build" / "focus-stack"
+
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+VIDEO_EXTS = {".mp4", ".h264"}
+
+log = logging.getLogger("photobooth")
+app = Flask(__name__)
+
+# --------------------------------------------------------------------------
+# Config
+# --------------------------------------------------------------------------
+
+config_lock = threading.RLock()
+
+
+def deep_merge(base, override):
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def load_config():
+    if not CONFIG_PATH.exists():
+        shutil.copy(EXAMPLE_CONFIG_PATH, CONFIG_PATH)
+    defaults = json.loads(EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8"))
+    user = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    return deep_merge(defaults, user)
+
+
+CONFIG = load_config()
+
+
+def save_config():
+    with config_lock:
+        tmp = CONFIG_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(CONFIG, indent=2), encoding="utf-8")
+        os.replace(tmp, CONFIG_PATH)
+
+
+def data_dir(key):
+    path = Path(CONFIG["paths"][key])
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+# --------------------------------------------------------------------------
+# File naming
+# --------------------------------------------------------------------------
+
+UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def sanitize(text):
+    text = UNSAFE_CHARS.sub("_", (text or "").strip())
+    return re.sub(r"_{2,}", "_", text).strip("._-")
+
+
+def format_name(pattern, label, seq, now=None):
+    name = pattern.format(dt=now or datetime.now(), label=sanitize(label), seq=seq)
+    return sanitize(name)
+
+
+def build_basename(label):
+    """Render the filename pattern; bumps the {seq} counter when it is used."""
+    with config_lock:
+        pattern = CONFIG["filename_pattern"]
+        seq = int(CONFIG.get("next_seq", 1))
+        name = format_name(pattern, label, seq)
+        if "{seq" in pattern:
+            CONFIG["next_seq"] = seq + 1
+            save_config()
+    return name or datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def unique_stem(directory, stem, ext):
+    """Never overwrite: append _2, _3, ... when the name is taken."""
+    candidate, n = stem, 2
+    while (directory / f"{candidate}{ext}").exists() or (directory / candidate).exists():
+        candidate = f"{stem}_{n}"
+        n += 1
+    return candidate
+
+
+def safe_child(directory, name):
+    """Resolve ``name`` inside ``directory``; 404 on anything that escapes it."""
+    target = (directory / name).resolve()
+    if directory.resolve() not in target.parents or not target.exists():
+        abort(404)
+    return target
+
+
+def image_ext():
+    fmt = CONFIG.get("image_format", "png").lower()
+    return {"jpg": ".jpg", "jpeg": ".jpg", "tif": ".tif", "tiff": ".tif"}.get(fmt, ".png")
+
+
+# --------------------------------------------------------------------------
+# Camera controls description
+# --------------------------------------------------------------------------
+
+# libcamera enum values -> readable labels (courant libcamera convention).
+ENUM_CONTROLS = {
+    "AeMeteringMode": {0: "CentreWeighted", 1: "Spot", 2: "Matrix", 3: "Custom"},
+    "AeConstraintMode": {0: "Normal", 1: "Highlight", 2: "Shadows", 3: "Custom"},
+    "AeExposureMode": {0: "Normal", 1: "Short", 2: "Long", 3: "Custom"},
+    "AeFlickerMode": {0: "Off", 1: "Manual", 2: "Auto"},
+    "AwbMode": {0: "Auto", 1: "Incandescent", 2: "Tungsten", 3: "Fluorescent",
+                4: "Indoor", 5: "Daylight", 6: "Cloudy", 7: "Custom"},
+    "AfMode": {0: "Manual", 1: "Auto", 2: "Continuous"},
+    "AfRange": {0: "Normal", 1: "Macro", 2: "Full"},
+    "AfSpeed": {0: "Normal", 1: "Fast"},
+    "AfMetering": {0: "Auto", 1: "Windows"},
+    "NoiseReductionMode": {0: "Off", 1: "Fast", 2: "HighQuality", 3: "Minimal", 4: "ZSL"},
+    "HdrMode": {0: "Off", 1: "MultiExposureUnmerged", 2: "MultiExposure",
+                3: "SingleExposure", 4: "Night"},
+}
+
+# Controls whose value is a fixed-length list although min/max are scalars.
+ARRAY_CONTROLS = {"ColourGains": 2, "FrameDurationLimits": 2, "ColourCorrectionMatrix": 9}
+
+# Actions rather than settings; handled by dedicated buttons or not useful.
+HIDDEN_CONTROLS = {"AfTrigger", "AfPause", "AfWindows"}
+
+
+def jsonable(value):
+    if isinstance(value, (bool, int, float, str)) or value is None:
+        return value
+    if isinstance(value, (list, tuple)):
+        return [jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {k: jsonable(v) for k, v in value.items()}
+    try:
+        return [jsonable(v) for v in value]
+    except TypeError:
+        return str(value)
+
+
+def is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def describe_controls(camera_controls, current):
+    described = []
+    for name in sorted(camera_controls):
+        if name in HIDDEN_CONTROLS:
+            continue
+        mn, mx, default = camera_controls[name]
+        entry = {
+            "name": name,
+            "min": jsonable(mn),
+            "max": jsonable(mx),
+            "default": jsonable(default),
+            "value": jsonable(current.get(name, default)),
+        }
+        if name in ENUM_CONTROLS:
+            options = ENUM_CONTROLS[name]
+            if is_number(mn) and is_number(mx):
+                options = {k: v for k, v in options.items() if mn <= k <= mx}
+            entry["type"] = "enum"
+            entry["options"] = [{"value": k, "label": v} for k, v in options.items()]
+        elif isinstance(mn, bool) or isinstance(default, bool):
+            entry["type"] = "bool"
+        elif name in ARRAY_CONTROLS and is_number(mn) and is_number(mx):
+            entry["type"] = "array"
+            entry["length"] = ARRAY_CONTROLS[name]
+            entry["numeric"] = "float" if isinstance(mn, float) or isinstance(mx, float) else "int"
+        elif is_number(mn) and is_number(mx):
+            entry["type"] = "float" if any(isinstance(v, float) for v in (mn, mx, default)) else "int"
+        else:
+            entry["type"] = "json"
+        described.append(entry)
+    return described
+
+
+def coerce_control(name, value, info):
+    mn, mx, default = info
+    if isinstance(value, str) and value.strip()[:1] in "[{":
+        value = json.loads(value)
+    if name in ARRAY_CONTROLS:
+        cast = float if isinstance(mn, float) or isinstance(mx, float) else int
+        return tuple(cast(v) for v in value)
+    if isinstance(mn, bool) or isinstance(default, bool):
+        if isinstance(value, str):
+            return value.lower() in ("1", "true", "on", "yes")
+        return bool(value)
+    if any(isinstance(v, float) for v in (mn, mx, default)):
+        return float(value)
+    if is_number(mn):
+        return int(round(float(value)))
+    if isinstance(value, list):
+        return tuple(value)
+    return value
+
+
+# --------------------------------------------------------------------------
+# Camera backends
+# --------------------------------------------------------------------------
+
+camera_lock = threading.Lock()
+
+
+class StreamingOutput(io.BufferedIOBase):
+    """Holds the latest MJPEG frame for /stream.mjpg clients."""
+
+    def __init__(self):
+        self.frame = None
+        self.condition = threading.Condition()
+
+    def write(self, buf):
+        with self.condition:
+            self.frame = bytes(buf)
+            self.condition.notify_all()
+        return len(buf)
+
+
+class RealCamera:
+    demo = False
+
+    def __init__(self, index=0, stream=None):
+        from picamera2 import Picamera2
+        from picamera2.encoders import H264Encoder, MJPEGEncoder
+        from picamera2.outputs import FfmpegOutput, FileOutput
+
+        self._H264Encoder, self._MJPEGEncoder = H264Encoder, MJPEGEncoder
+        self._FfmpegOutput, self._FileOutput = FfmpegOutput, FileOutput
+        self.index = index
+        self.picam2 = Picamera2(index)
+        self.model = self.picam2.camera_properties.get("Model", f"camera{index}")
+        self.stream = stream or StreamingOutput()  # shared so open preview tabs survive a switch
+        self.applied = {}
+        self.start_still_mode()
+
+    # -- modes --------------------------------------------------------------
+    def _still_config(self):
+        cam = CONFIG["camera"]
+        main_size = tuple(cam.get("still_size") or self.picam2.sensor_resolution)
+        return self.picam2.create_still_configuration(
+            main={"size": main_size, "format": "RGB888"},
+            lores={"size": tuple(cam["preview_size"]), "format": "YUV420"},
+            display=None,
+            buffer_count=int(cam.get("buffer_count", 2)),
+            queue=False,  # captures always use a frame taken after the click
+        )
+
+    def _apply_saved_controls(self):
+        if self.applied:
+            try:
+                self.picam2.set_controls(self.applied)
+            except Exception as exc:  # e.g. a control invalid in video mode
+                log.warning("Could not re-apply controls: %s", exc)
+
+    def start_still_mode(self):
+        self.picam2.configure(self._still_config())
+        self.picam2.start_encoder(self._MJPEGEncoder(), self._FileOutput(self.stream), name="lores")
+        self.picam2.start()
+        self._apply_saved_controls()
+
+    def stop_all(self):
+        self.picam2.stop_recording()  # stops every encoder and the camera
+
+    # -- info ---------------------------------------------------------------
+    @property
+    def camera_controls(self):
+        return self.picam2.camera_controls
+
+    @property
+    def has_autofocus(self):
+        return "AfMode" in self.picam2.camera_controls and "LensPosition" in self.picam2.camera_controls
+
+    @property
+    def sensor_resolution(self):
+        return tuple(self.picam2.sensor_resolution)
+
+    def metadata(self):
+        return self.picam2.capture_metadata()
+
+    # -- controls -----------------------------------------------------------
+    def set_controls(self, controls):
+        self.picam2.set_controls(controls)
+        self.applied.update(controls)
+
+    def reset_controls(self):
+        defaults = {name: info[2] for name, info in self.camera_controls.items()
+                    if name not in HIDDEN_CONTROLS and info[2] is not None}
+        self.applied = {}
+        try:
+            self.picam2.set_controls(defaults)
+        except Exception as exc:
+            log.warning("Resetting some controls failed: %s", exc)
+
+    # -- capture ------------------------------------------------------------
+    def capture(self, path):
+        req = self.picam2.capture_request()
+        try:
+            image = req.make_image("main")  # copies the buffer
+            metadata = req.get_metadata()
+        finally:
+            req.release()
+        save_image(image, path)
+        return metadata
+
+    def capture_main_array(self):
+        return self.picam2.capture_array("main")
+
+    def autofocus(self):
+        previous = self.applied.get("AfMode")
+        self.picam2.set_controls({"AfMode": 1})
+        ok = self.picam2.autofocus_cycle()
+        lens = self.picam2.capture_metadata().get("LensPosition")
+        if previous in (None, 0) and lens is not None:
+            # Lock the found position in manual mode — convenient for stacking.
+            self.set_controls({"AfMode": 0, "LensPosition": lens})
+        return ok, lens
+
+    # -- video --------------------------------------------------------------
+    def start_video(self, stem, directory):
+        vid = CONFIG["video"]
+        self.stop_all()
+        cfg = self.picam2.create_video_configuration(
+            main={"size": tuple(vid["size"]), "format": "YUV420"},
+            lores={"size": tuple(vid["preview_size"]), "format": "YUV420"},
+            display=None,
+            encode="main",
+        )
+        self.picam2.configure(cfg)
+        if shutil.which("ffmpeg"):
+            path = directory / f"{stem}.mp4"
+            output = self._FfmpegOutput(str(path))
+        else:
+            path = directory / f"{stem}.h264"
+            output = self._FileOutput(str(path))
+        self.picam2.start_encoder(self._H264Encoder(bitrate=int(vid["bitrate"])), output, name="main")
+        self.picam2.start_encoder(self._MJPEGEncoder(), self._FileOutput(self.stream), name="lores")
+        self.picam2.start()
+        self._apply_saved_controls()
+        return path
+
+    def stop_video(self):
+        self.stop_all()
+        self.start_still_mode()
+
+    def close(self):
+        try:
+            self.stop_all()
+            self.picam2.close()
+        except Exception:
+            pass
+
+
+class DemoCamera:
+    """Stand-in when picamera2 is unavailable (e.g. developing on a PC)."""
+
+    demo = True
+    sensor_resolution = (2028, 1520)
+    has_autofocus = True  # so the sweep UI can be exercised without hardware
+
+    camera_controls = {
+        "AeEnable": (False, True, True),
+        "AfMode": (0, 2, 0),
+        "LensPosition": (0.0, 15.0, 1.0),
+        "AnalogueGain": (1.0, 22.26, 1.0),
+        "AwbEnable": (False, True, True),
+        "AwbMode": (0, 7, 0),
+        "AeMeteringMode": (0, 3, 0),
+        "Brightness": (-1.0, 1.0, 0.0),
+        "ColourGains": (0.0, 32.0, None),
+        "Contrast": (0.0, 32.0, 1.0),
+        "ExposureTime": (114, 694422939, None),
+        "ExposureValue": (-8.0, 8.0, 0.0),
+        "FrameDurationLimits": (100, 694434742, None),
+        "NoiseReductionMode": (0, 4, 0),
+        "Saturation": (0.0, 32.0, 1.0),
+        "ScalerCrop": ((0, 0, 0, 0), (0, 0, 4056, 3040), (2, 0, 4052, 3040)),
+        "Sharpness": (0.0, 16.0, 1.0),
+    }
+
+    index = 0
+    model = "demo"
+
+    def __init__(self, index=0, stream=None):
+        self.stream = stream or StreamingOutput()
+        self.applied = {}
+        self.recording_path = None
+        self.closed = False
+        threading.Thread(target=self._frames, daemon=True).start()
+
+    def _render(self, size):
+        from PIL import Image, ImageDraw
+
+        w, h = size
+        img = Image.new("RGB", size, (18, 18, 22))
+        draw = ImageDraw.Draw(img)
+        t = time.time()
+        cx, cy = w // 2 + int(w * 0.05 * __import__("math").sin(t)), h // 2
+        r = h // 5
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(160, 70, 40), outline=(230, 200, 120), width=max(2, w // 300))
+        for i in range(0, w, max(8, w // 64)):
+            draw.line((i, h - h // 8, i + w // 128, h), fill=(90, 90, 90))
+        draw.text((10, 10), f"DEMO {datetime.now():%H:%M:%S}", fill=(255, 255, 255))
+        draw.text((10, 26), json.dumps(jsonable(self.applied))[:120], fill=(180, 180, 180))
+        if self.recording_path:
+            draw.ellipse((w - 30, 10, w - 10, 30), fill=(220, 0, 0))
+        return img
+
+    def _frames(self):
+        while not self.closed:
+            buf = io.BytesIO()
+            self._render(tuple(CONFIG["camera"]["preview_size"])).save(buf, "JPEG", quality=80)
+            self.stream.write(buf.getvalue())
+            time.sleep(0.2)
+
+    def metadata(self):
+        return {"ExposureTime": 20000, "AnalogueGain": 1.0, "ColourTemperature": 5200,
+                "Lux": 400.0, "SensorTimestamp": time.monotonic_ns(), **self.applied}
+
+    def set_controls(self, controls):
+        self.applied.update(controls)
+
+    def reset_controls(self):
+        self.applied = {}
+
+    def capture(self, path):
+        save_image(self._render(self.sensor_resolution), path)
+        return self.metadata()
+
+    def capture_main_array(self):
+        import numpy as np
+        return np.asarray(self._render(self.sensor_resolution))
+
+    def autofocus(self):
+        self.applied.update({"AfMode": 0, "LensPosition": 5.0})
+        return True, 5.0
+
+    def start_video(self, stem, directory):
+        self.recording_path = directory / f"{stem}.mp4"
+        self.recording_path.write_bytes(b"")  # placeholder, demo only
+        return self.recording_path
+
+    def stop_video(self):
+        self.recording_path = None
+
+    def close(self):
+        self.closed = True
+
+
+def save_image(image, path):
+    ext = path.suffix.lower()
+    if ext == ".png":
+        image.save(path, compress_level=int(CONFIG.get("png_compress_level", 3)))
+    elif ext in (".jpg", ".jpeg"):
+        image.convert("RGB").save(path, quality=int(CONFIG.get("jpeg_quality", 95)), subsampling=0)
+    else:
+        image.save(path, compression="tiff_lzw")
+
+
+def demo_mode():
+    if os.environ.get("MINICAMERA_DEMO") == "1":
+        return True
+    try:
+        import picamera2  # noqa: F401
+    except ImportError:
+        return True
+    return False
+
+
+def list_cameras():
+    """Cameras libcamera detected at startup (CSI ports are not hot-pluggable)."""
+    if demo_mode():
+        return [{"index": 0, "model": "demo", "location": None, "id": "demo"}]
+    from picamera2 import Picamera2
+    return [{"index": i, "model": c.get("Model"), "location": c.get("Location"), "id": c.get("Id")}
+            for i, c in enumerate(Picamera2.global_camera_info())]
+
+
+def open_camera(index=None, stream=None):
+    if demo_mode():
+        log.warning("Demo mode (MINICAMERA_DEMO=1 or picamera2 missing) — no real camera")
+        return DemoCamera(stream=stream)
+    cameras = list_cameras()
+    if not cameras:
+        raise RuntimeError("No camera detected — check the ribbon cable and `rpicam-hello --list-cameras`")
+    if index is None:
+        index = int(CONFIG["camera"].get("index") or 0)
+    if index >= len(cameras):
+        log.warning("Configured camera %s not present, using camera 0", index)
+        index = 0
+    log.info("Opening camera %s: %s", index, cameras[index]["model"])
+    return RealCamera(index, stream=stream)
+
+
+def restore_controls(cam):
+    """Re-apply the controls saved for this camera model."""
+    saved = (CONFIG.get("controls") or {}).get(cam.model) or {}
+    if not saved or not CONFIG.get("persist_controls", True):
+        return
+    restored = {}
+    for name, value in saved.items():
+        if name in cam.camera_controls and name not in HIDDEN_CONTROLS:
+            try:
+                restored[name] = coerce_control(name, value, cam.camera_controls[name])
+            except (TypeError, ValueError):
+                pass
+    with camera_lock:
+        try:
+            cam.set_controls(restored)
+        except Exception as exc:
+            log.warning("Could not restore saved controls: %s", exc)
+
+
+camera = None  # set in main()
+recording = {"active": False, "path": None, "started": None}
+active_stack = None  # {"name", "dir", "count"} while collecting frames
+state_lock = threading.Lock()
+
+
+def write_sidecar(path, metadata, extra=None):
+    if not CONFIG.get("save_metadata", True):
+        return
+    data = {"file": path.name, "captured": datetime.now().isoformat(timespec="seconds"),
+            "metadata": jsonable(metadata), **(extra or {})}
+    path.with_suffix(".json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+# --------------------------------------------------------------------------
+# Background jobs (focus-stack processing, uploads)
+# --------------------------------------------------------------------------
+
+jobs = {}
+jobs_lock = threading.Lock()
+processing_slot = threading.Semaphore(1)  # one focus-stack run at a time (Pi RAM)
+
+
+def job_log(job, line):
+    line = line.rstrip()
+    if line:
+        job["log"].append(line)
+        del job["log"][:-400]
+
+
+def start_job(kind, name, fn, *args):
+    job = {"id": uuid.uuid4().hex[:12], "kind": kind, "name": name, "status": "queued",
+           "log": [], "created": time.time(), "finished": None, "result": None, "error": None}
+    with jobs_lock:
+        jobs[job["id"]] = job
+
+    def runner():
+        slot = processing_slot if kind == "focus-stack" else None
+        try:
+            if slot:
+                slot.acquire()
+            job["status"] = "running"
+            job["result"] = fn(job, *args)
+            job["status"] = "done"
+        except Exception as exc:
+            log.exception("Job %s failed", job["id"])
+            job["status"] = "error"
+            job["error"] = str(exc)
+            job_log(job, f"ERROR: {exc}")
+        finally:
+            if slot:
+                slot.release()
+            job["finished"] = time.time()
+
+    threading.Thread(target=runner, daemon=True).start()
+    return job
+
+
+def latest_job(kind, name):
+    with jobs_lock:
+        matching = [j for j in jobs.values() if j["kind"] == kind and j["name"] == name]
+    return max(matching, key=lambda j: j["created"]) if matching else None
+
+
+# --------------------------------------------------------------------------
+# Focus stacking
+# --------------------------------------------------------------------------
+
+def find_focus_stack():
+    configured = CONFIG["focus_stack"].get("binary")
+    for candidate in (configured, str(VENDORED_FOCUS_STACK), shutil.which("focus-stack")):
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+_focus_stack_version = {}
+
+
+def focus_stack_version(binary):
+    if binary not in _focus_stack_version:
+        try:
+            out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10)
+            _focus_stack_version[binary] = (out.stdout or out.stderr).strip()
+        except Exception as exc:
+            _focus_stack_version[binary] = f"unknown ({exc})"
+    return _focus_stack_version[binary]
+
+
+def stack_frames(stack_dir, name):
+    pattern = re.compile(rf"^{re.escape(name)}_(\d+)(\.[A-Za-z]+)$")
+    frames = []
+    for f in stack_dir.iterdir():
+        m = pattern.match(f.name)
+        if m and m.group(2).lower() in IMAGE_EXTS:
+            frames.append((int(m.group(1)), f))
+    return [f for _, f in sorted(frames)]
+
+
+def stack_outputs(stack_dir, name):
+    found = {}
+    for f in stack_dir.glob(f"{name}_stacked.*"):
+        if f.suffix.lower() in IMAGE_EXTS:
+            found["result"] = f.name
+    for key in ("depthmap", "3dview"):
+        f = stack_dir / f"{name}_{key}.png"
+        if f.exists():
+            found[key] = f.name
+    return found
+
+
+def build_focus_stack_cmd(binary, stack_dir, name, frames, opts):
+    ext = {"jpg": "jpg", "jpeg": "jpg", "tif": "tif", "tiff": "tif"}.get(opts.get("output_format", "png"), "png")
+    output = stack_dir / f"{name}_stacked.{ext}"
+    cmd = [binary, f"--output={output}"]
+    if opts.get("depthmap"):
+        cmd.append(f"--depthmap={stack_dir / f'{name}_depthmap.png'}")
+    if opts.get("view3d"):
+        cmd.append(f"--3dview={stack_dir / f'{name}_3dview.png'}")
+    flags = {
+        "global_align": "--global-align",
+        "full_resolution_align": "--full-resolution-align",
+        "no_whitebalance": "--no-whitebalance",
+        "no_contrast": "--no-contrast",
+        "no_transform": "--no-transform",
+        "no_align": "--no-align",
+        "align_keep_size": "--align-keep-size",
+        "nocrop": "--nocrop",
+        "no_opencl": "--no-opencl",
+        "verbose": "--verbose",
+    }
+    cmd += [flag for key, flag in flags.items() if opts.get(key)]
+    values = {
+        "consistency": "--consistency", "denoise": "--denoise", "threads": "--threads",
+        "batchsize": "--batchsize", "jpgquality": "--jpgquality", "remove_bg": "--remove-bg",
+        "reference": "--reference",
+    }
+    opts = dict(opts)
+    if str(opts.get("batchsize")) == "0":
+        opts["batchsize"] = len(frames)  # all frames in one merge batch
+    for key, flag in values.items():
+        if opts.get(key) not in (None, ""):
+            cmd.append(f"{flag}={opts[key]}")
+    cmd += shlex.split(opts.get("extra_args") or "")
+    cmd += [str(f) for f in frames]
+    return cmd, output
+
+
+def run_focus_stack(job, name, overrides):
+    binary = find_focus_stack()
+    if not binary:
+        raise RuntimeError("focus-stack binary not found — run ./install.sh (builds vendor/focus-stack)")
+    stack_dir = safe_child(data_dir("stacks"), name)
+    frames = stack_frames(stack_dir, name)
+    if len(frames) < 2:
+        raise RuntimeError(f"Need at least 2 frames, found {len(frames)}")
+    opts = {**CONFIG["focus_stack"], **(overrides or {})}
+    for old in stack_dir.glob(f"{name}_stacked.*"):
+        old.unlink()
+    cmd, output = build_focus_stack_cmd(binary, stack_dir, name, frames, opts)
+    job_log(job, "$ " + " ".join(shlex.quote(c) for c in cmd))
+    started = time.time()
+    proc = subprocess.Popen(cmd, cwd=stack_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+    job["pid"] = proc.pid
+    for line in proc.stdout:
+        job_log(job, line)
+    rc = proc.wait()
+    (stack_dir / "process.log").write_text("\n".join(job["log"]), encoding="utf-8")
+    if rc != 0:
+        raise RuntimeError(f"focus-stack exited with code {rc}")
+    if not output.exists():
+        raise RuntimeError("focus-stack finished but produced no output file")
+    job_log(job, f"Done in {time.time() - started:.0f}s -> {output.name}")
+    result = {"output": output.name, "seconds": round(time.time() - started, 1)}
+    if opts.get("delete_frames"):
+        dests = auto_upload_dests()
+        if dests and CONFIG["upload"].get("stack_frames"):
+            # Frames are about to disappear: upload them now, inside this job.
+            for dest in dests:
+                run_upload(job, dest, "stack", name)
+            result["deleted_frames"] = delete_stack_frames(stack_dir, name)
+            job_log(job, f"Deleted {result['deleted_frames']} source frames")
+            return result
+        result["deleted_frames"] = delete_stack_frames(stack_dir, name)
+        job_log(job, f"Deleted {result['deleted_frames']} source frames")
+    result["uploads"] = auto_upload("stack", name)
+    return result
+
+
+def delete_stack_frames(stack_dir, name):
+    frames = stack_frames(stack_dir, name)
+    for f in frames:
+        f.unlink()
+        f.with_suffix(".json").unlink(missing_ok=True)
+        (stack_dir.parent / ".thumbs" / f"{name}__{f.name}.jpg").unlink(missing_ok=True)
+    return len(frames)
+
+
+# --------------------------------------------------------------------------
+# Uploads (always explicit)
+# --------------------------------------------------------------------------
+
+def upload_sources(kind, name):
+    if kind == "photo":
+        path = safe_child(data_dir("photos"), name)
+        sidecar = path.with_suffix(".json")
+        return [path] + ([sidecar] if sidecar.exists() else []), "photos"
+    if kind == "video":
+        return [safe_child(data_dir("videos"), name)], "videos"
+    if kind == "stack":
+        stack_dir = safe_child(data_dir("stacks"), name)
+        if CONFIG["upload"].get("stack_frames", False):
+            return [stack_dir], "stacks"
+        outputs = stack_outputs(stack_dir, name)
+        if not outputs:
+            raise RuntimeError("Stack has no processed result yet (enable 'upload stack frames' to send frames)")
+        files = [stack_dir / f for f in outputs.values()]
+        return files, f"stacks/{name}"
+    raise RuntimeError(f"Unknown kind {kind!r}")
+
+
+def mount_point(path):
+    path = path.resolve()
+    while not os.path.ismount(path):
+        path = path.parent
+    return path
+
+
+def run_upload(job, dest, kind, name):
+    sources, subdir = upload_sources(kind, name)
+    up = CONFIG["upload"]
+    if dest == "drive":
+        rclone = shutil.which("rclone")
+        if not rclone:
+            raise RuntimeError("rclone not installed")
+        remote = up["rclone_remote"].rstrip("/")
+        for src in sources:
+            target = f"{remote}/{subdir}/{src.name}" if src.is_dir() else f"{remote}/{subdir}"
+            cmd = [rclone, "copy", str(src), target, "--stats-one-line", "-v"]
+            job_log(job, "$ " + " ".join(cmd))
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            for line in (proc.stdout + proc.stderr).splitlines():
+                job_log(job, line)
+            if proc.returncode != 0:
+                raise RuntimeError(f"rclone exited with code {proc.returncode}")
+        return {"dest": remote}
+    if dest == "nas":
+        nas = Path(up["nas_path"])
+        if not nas.is_dir():
+            raise RuntimeError(f"NAS path {nas} does not exist — is the share mounted?")
+        if up.get("nas_require_mount", True) and mount_point(nas) == Path("/"):
+            raise RuntimeError(f"{nas} is not on a mounted share (would write to the SD card)")
+        target_dir = nas / subdir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for src in sources:
+            job_log(job, f"copy {src} -> {target_dir}")
+            if src.is_dir():
+                shutil.copytree(src, target_dir / src.name, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, target_dir / src.name)
+        return {"dest": str(target_dir)}
+    raise RuntimeError(f"Unknown destination {dest!r}")
+
+
+_drive_check = {"at": 0.0, "ok": False}
+
+
+def drive_available():
+    """True when rclone is installed and the configured remote exists (cached 60s)."""
+    if time.time() - _drive_check["at"] < 60:
+        return _drive_check["ok"]
+    ok = False
+    rclone = shutil.which("rclone")
+    remote = CONFIG["upload"].get("rclone_remote", "").split(":")[0]
+    if rclone and remote:
+        try:
+            out = subprocess.run([rclone, "listremotes"], capture_output=True, text=True, timeout=15)
+            ok = f"{remote}:" in out.stdout.split()
+        except Exception as exc:
+            log.warning("rclone listremotes failed: %s", exc)
+    _drive_check.update(at=time.time(), ok=ok)
+    return ok
+
+
+def nas_available():
+    nas = Path(CONFIG["upload"].get("nas_path") or "/nonexistent")
+    if not nas.is_dir():
+        return False
+    return not CONFIG["upload"].get("nas_require_mount", True) or mount_point(nas) != Path("/")
+
+
+def auto_upload_dests():
+    up = CONFIG["upload"]
+    dests = []
+    if up.get("auto_drive") and drive_available():
+        dests.append("drive")
+    if up.get("auto_nas") and nas_available():
+        dests.append("nas")
+    return dests
+
+
+def auto_upload(kind, name):
+    """Queue uploads for the destinations that have auto-upload enabled and are reachable."""
+    return [start_job("upload", f"{kind}:{name}", run_upload, dest, kind, name)["id"]
+            for dest in auto_upload_dests()]
+
+
+# --------------------------------------------------------------------------
+# LensPosition sweep (AF cameras only)
+# --------------------------------------------------------------------------
+
+def sweep_positions(start, end, steps):
+    steps = max(2, int(steps))
+    return [round(start + (end - start) * i / (steps - 1), 4) for i in range(steps)]
+
+
+def run_sweep(job, name, positions, settle_ms, process):
+    """Capture one stack frame per lens position, then optionally process it."""
+    global active_stack
+    stack_dir = data_dir("stacks") / name
+    try:
+        with camera_lock:
+            camera.set_controls({"AfMode": 0})
+        for n, pos in enumerate(positions, start=1):
+            if job.get("cancel"):
+                job_log(job, "Cancelled")
+                break
+            with camera_lock:
+                camera.set_controls({"LensPosition": float(pos)})
+                time.sleep(settle_ms / 1000)
+                path = stack_dir / f"{name}_{n}{image_ext()}"
+                metadata = camera.capture(path)
+            write_sidecar(path, metadata, {"stack": name, "frame": n, "lens_position_target": pos})
+            with state_lock:
+                active_stack["count"] = n
+            job_log(job, f"frame {n}/{len(positions)} @ LensPosition {pos} "
+                         f"(reported {jsonable(metadata.get('LensPosition'))})")
+    finally:
+        with state_lock:
+            count = active_stack["count"] if active_stack else 0
+            active_stack = None
+    result = {"frames": count}
+    if process and count >= 2 and not job.get("cancel"):
+        result["process_job"] = start_job("focus-stack", name, run_focus_stack, name, None)["id"]
+    return result
+
+
+# --------------------------------------------------------------------------
+# Routes — pages, preview, media
+# --------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/stream.mjpg")
+def stream():
+    output = camera.stream
+
+    def frames():
+        while True:
+            with output.condition:
+                output.condition.wait(timeout=5)
+                frame = output.frame
+            if frame is None:
+                continue
+            yield (b"--FRAME\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                   + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
+
+    return Response(frames(), mimetype="multipart/x-mixed-replace; boundary=FRAME",
+                    headers={"Cache-Control": "no-cache, private", "Pragma": "no-cache"})
+
+
+MEDIA_KINDS = {"photos": "photos", "stacks": "stacks", "videos": "videos"}
+
+
+@app.route("/media/<kind>/<path:relpath>")
+def media(kind, relpath):
+    if kind not in MEDIA_KINDS:
+        abort(404)
+    path = safe_child(data_dir(kind), relpath)
+    if not path.is_file():
+        abort(404)
+    return send_file(path, as_attachment=request.args.get("download") == "1")
+
+
+@app.route("/download/stack/<name>.zip")
+def download_stack(name):
+    """Whole stack folder as a zip (stored, PNGs are already compressed)."""
+    import tempfile
+    import zipfile
+
+    stack_dir = safe_child(data_dir("stacks"), name)
+    # On disk next to the data, not /tmp (tmpfs = RAM on newer Pi OS).
+    tmp_dir = data_dir("stacks") / ".tmp"
+    tmp_dir.mkdir(exist_ok=True)
+    for stale in tmp_dir.glob("stack_*.zip"):
+        if time.time() - stale.stat().st_mtime > 3600:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+    tmp = tempfile.NamedTemporaryFile(prefix="stack_", suffix=".zip", delete=False, dir=tmp_dir)
+    tmp.close()
+    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_STORED) as zf:
+        for f in sorted(stack_dir.iterdir()):
+            if f.is_file():
+                zf.write(f, f"{name}/{f.name}")
+    response = send_file(tmp.name, as_attachment=True, download_name=f"{name}.zip")
+    def cleanup():
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass  # still open (Windows); removed by the stale sweep above
+
+    response.call_on_close(cleanup)
+    return response
+
+
+@app.route("/thumb/<kind>/<path:relpath>")
+def thumb(kind, relpath):
+    if kind not in MEDIA_KINDS:
+        abort(404)
+    base = data_dir(kind)
+    src = safe_child(base, relpath)
+    if src.suffix.lower() not in IMAGE_EXTS:
+        abort(404)
+    cache = base / ".thumbs" / (relpath.replace("/", "__") + ".jpg")
+    if not cache.exists() or cache.stat().st_mtime < src.stat().st_mtime:
+        from PIL import Image
+        cache.parent.mkdir(exist_ok=True)
+        with Image.open(src) as img:
+            img.draft("RGB", (480, 360))
+            img = img.convert("RGB")
+            img.thumbnail((480, 360))
+            img.save(cache, "JPEG", quality=80)
+    return send_file(cache, max_age=3600)
+
+
+# --------------------------------------------------------------------------
+# Routes — camera
+# --------------------------------------------------------------------------
+
+LIVE_METADATA_KEYS = ("ExposureTime", "AnalogueGain", "DigitalGain", "ColourTemperature",
+                      "ColourGains", "Lux", "LensPosition", "AfState", "FocusFoM", "FrameDuration")
+
+
+@app.route("/api/controls", methods=["GET", "POST"])
+def api_controls():
+    if request.method == "GET":
+        with camera_lock:
+            try:
+                metadata = camera.metadata()
+            except Exception as exc:
+                log.warning("capture_metadata failed: %s", exc)
+                metadata = {}
+        current = {**metadata, **camera.applied}
+        live = {k: jsonable(metadata[k]) for k in LIVE_METADATA_KEYS if k in metadata}
+        return jsonify(controls=describe_controls(camera.camera_controls, current), live=live)
+
+    body = request.get_json(force=True) or {}
+    if body.get("reset"):
+        with camera_lock:
+            camera.reset_controls()
+        CONFIG.setdefault("controls", {}).pop(camera.model, None)
+        save_config()
+        return jsonify(ok=True, applied={})
+
+    errors, to_set = {}, {}
+    for name, value in body.items():
+        info = camera.camera_controls.get(name)
+        if info is None or name in HIDDEN_CONTROLS:
+            errors[name] = "unknown control"
+            continue
+        try:
+            to_set[name] = coerce_control(name, value, info)
+        except (TypeError, ValueError) as exc:
+            errors[name] = str(exc)
+    if to_set:
+        with camera_lock:
+            try:
+                camera.set_controls(to_set)
+            except Exception as exc:
+                return jsonify(ok=False, errors={"_": str(exc)}), 400
+        if CONFIG.get("persist_controls", True):
+            CONFIG.setdefault("controls", {})[camera.model] = jsonable(camera.applied)
+            save_config()
+    return jsonify(ok=not errors, applied=jsonable(camera.applied), errors=errors)
+
+
+@app.route("/api/camera_info")
+def api_camera_info():
+    binary = find_focus_stack()
+    return jsonify(
+        model=camera.model,
+        index=camera.index,
+        has_autofocus=camera.has_autofocus,
+        demo=camera.demo,
+        sensor_resolution=list(camera.sensor_resolution),
+        focus_stack={"available": bool(binary), "binary": binary,
+                     "version": focus_stack_version(binary) if binary else None},
+        lens_range=jsonable(camera.camera_controls.get("LensPosition")),
+        drive=drive_available(),
+        nas=nas_available(),
+        ffmpeg=bool(shutil.which("ffmpeg")),
+    )
+
+
+@app.route("/api/cameras", methods=["GET", "POST"])
+def api_cameras():
+    """List detected cameras; POST {"index": n} switches to another one."""
+    global camera
+    if request.method == "POST":
+        index = int((request.get_json(force=True) or {}).get("index", 0))
+        with state_lock:
+            if recording["active"] or active_stack:
+                return jsonify(ok=False, error="stop recording / finish the stack first"), 409
+        if index >= len(list_cameras()):
+            return jsonify(ok=False, error=f"no camera {index}"), 400
+        with camera_lock:
+            stream = camera.stream
+            camera.close()
+            try:
+                camera = open_camera(index, stream=stream)
+            except Exception as exc:
+                log.exception("Switching camera failed, reopening previous")
+                camera = open_camera(stream=stream)
+                return jsonify(ok=False, error=str(exc)), 500
+        restore_controls(camera)
+        CONFIG["camera"]["index"] = index
+        save_config()
+    return jsonify(ok=True, cameras=list_cameras(), active=camera.index, model=camera.model)
+
+
+@app.route("/api/status")
+def api_status():
+    with state_lock:
+        stack = dict(active_stack, dir=None) if active_stack else None
+        rec = dict(recording, path=recording["path"] and Path(recording["path"]).name)
+    return jsonify(recording=rec, stack=stack, next_seq=CONFIG.get("next_seq", 1))
+
+
+@app.route("/api/autofocus/trigger", methods=["POST"])
+def api_autofocus():
+    if not camera.has_autofocus:
+        return jsonify(ok=False, error="camera has no autofocus"), 400
+    with camera_lock:
+        ok, lens = camera.autofocus()
+    return jsonify(ok=bool(ok), lens_position=lens)
+
+
+def laplacian_variance(gray):
+    lap = (gray[1:-1, :-2] + gray[1:-1, 2:] + gray[:-2, 1:-1] + gray[2:, 1:-1]
+           - 4 * gray[1:-1, 1:-1])
+    return float(lap.var())
+
+
+@app.route("/api/focus_check")
+def api_focus_check():
+    """100% crop of the full-resolution stream plus a sharpness score."""
+    import numpy as np
+    from PIL import Image
+
+    if recording["active"]:
+        return jsonify(error="not available while recording"), 409
+    x = min(max(float(request.args.get("x", 0.5)), 0.0), 1.0)
+    y = min(max(float(request.args.get("y", 0.5)), 0.0), 1.0)
+    size = int(request.args.get("size", 600))
+    with camera_lock:
+        frame = camera.capture_main_array()
+    h, w = frame.shape[:2]
+    cw, ch = min(size, w), min(int(size * 0.75), h)
+    left = int(min(max(x * w - cw / 2, 0), w - cw))
+    top = int(min(max(y * h - ch / 2, 0), h - ch))
+    crop = frame[top:top + ch, left:left + cw, :3]
+    if not camera.demo:
+        crop = crop[:, :, ::-1]  # picamera2 "RGB888" arrays are BGR ordered
+    score = laplacian_variance(crop.astype(np.float32).mean(axis=2))
+    buf = io.BytesIO()
+    Image.fromarray(np.ascontiguousarray(crop)).save(buf, "JPEG", quality=90)
+    return Response(buf.getvalue(), mimetype="image/jpeg",
+                    headers={"X-Sharpness": f"{score:.1f}", "Cache-Control": "no-store"})
+
+
+@app.route("/api/capture", methods=["POST"])
+def api_capture():
+    if recording["active"]:
+        return jsonify(ok=False, error="recording in progress"), 409
+    label = (request.get_json(silent=True) or {}).get("label", "")
+    directory, ext = data_dir("photos"), image_ext()
+    stem = unique_stem(directory, build_basename(label), ext)
+    path = directory / f"{stem}{ext}"
+    started = time.time()
+    with camera_lock:
+        metadata = camera.capture(path)
+    write_sidecar(path, metadata, {"label": label})
+    uploads = auto_upload("photo", path.name)
+    return jsonify(ok=True, file=path.name, seconds=round(time.time() - started, 2), uploads=uploads)
+
+
+@app.route("/api/video/start", methods=["POST"])
+def api_video_start():
+    label = (request.get_json(silent=True) or {}).get("label", "")
+    with state_lock:
+        if recording["active"]:
+            return jsonify(ok=False, error="already recording"), 409
+        if active_stack:
+            return jsonify(ok=False, error="finish the stack first"), 409
+        recording["active"] = True
+    directory = data_dir("videos")
+    stem = unique_stem(directory, build_basename(label), ".mp4")
+    try:
+        with camera_lock:
+            path = camera.start_video(stem, directory)
+    except Exception as exc:
+        log.exception("Starting video failed")
+        with camera_lock:
+            try:
+                camera.stop_video()
+            except Exception:
+                log.exception("Restoring still mode failed")
+        recording["active"] = False
+        return jsonify(ok=False, error=str(exc)), 500
+    recording.update(path=str(path), started=time.time())
+    return jsonify(ok=True, file=path.name)
+
+
+@app.route("/api/video/stop", methods=["POST"])
+def api_video_stop():
+    if not recording["active"]:
+        return jsonify(ok=False, error="not recording"), 409
+    with camera_lock:
+        camera.stop_video()
+    path = Path(recording["path"]) if recording["path"] else None
+    duration = time.time() - (recording["started"] or time.time())
+    recording.update(active=False, path=None, started=None)
+    uploads = auto_upload("video", path.name) if path and path.exists() and not camera.demo else []
+    return jsonify(ok=True, file=path.name if path else None, seconds=round(duration, 1), uploads=uploads)
+
+
+# --------------------------------------------------------------------------
+# Routes — focus stacks
+# --------------------------------------------------------------------------
+
+@app.route("/api/stack/start", methods=["POST"])
+def api_stack_start():
+    global active_stack
+    label = (request.get_json(silent=True) or {}).get("label", "")
+    with state_lock:
+        if active_stack:
+            return jsonify(ok=False, error=f"stack {active_stack['name']} still open"), 409
+        if recording["active"]:
+            return jsonify(ok=False, error="recording in progress"), 409
+        base = data_dir("stacks")
+        name = unique_stem(base, build_basename(label), "")
+        stack_dir = base / name
+        stack_dir.mkdir()
+        meta = {"name": name, "label": label, "created": datetime.now().isoformat(timespec="seconds")}
+        (stack_dir / "stack.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        active_stack = {"name": name, "dir": str(stack_dir), "count": 0}
+    return jsonify(ok=True, name=name)
+
+
+@app.route("/api/stack/frame", methods=["POST"])
+def api_stack_frame():
+    with state_lock:
+        if not active_stack:
+            return jsonify(ok=False, error="no stack open"), 409
+        if active_stack.get("sweep"):
+            return jsonify(ok=False, error="a lens sweep is running"), 409
+        active_stack["count"] += 1
+        n, name, stack_dir = active_stack["count"], active_stack["name"], Path(active_stack["dir"])
+    path = stack_dir / f"{name}_{n}{image_ext()}"
+    started = time.time()
+    try:
+        with camera_lock:
+            metadata = camera.capture(path)
+    except Exception:
+        with state_lock:
+            active_stack["count"] -= 1
+        raise
+    write_sidecar(path, metadata, {"stack": name, "frame": n})
+    return jsonify(ok=True, name=name, frame=n, file=path.name, seconds=round(time.time() - started, 2))
+
+
+@app.route("/api/stack/end", methods=["POST"])
+def api_stack_end():
+    global active_stack
+    with state_lock:
+        if not active_stack:
+            return jsonify(ok=False, error="no stack open"), 409
+        if active_stack.get("sweep"):
+            return jsonify(ok=False, error="a lens sweep is running — cancel it instead"), 409
+        finished, active_stack = active_stack, None
+    body = request.get_json(silent=True) or {}
+    job, uploads = None, []
+    # AF cameras always auto-stack; manual-focus rigs decide per stack.
+    if (body.get("process") or camera.has_autofocus) and finished["count"] >= 2:
+        job = start_job("focus-stack", finished["name"], run_focus_stack, finished["name"], None)
+    elif CONFIG["upload"].get("stack_frames") and finished["count"]:
+        uploads = auto_upload("stack", finished["name"])  # processed stacks upload after processing
+    return jsonify(ok=True, name=finished["name"], frames=finished["count"],
+                   job=job and job["id"], uploads=uploads)
+
+
+@app.route("/api/stack/sweep", methods=["POST"])
+def api_stack_sweep():
+    """Automatic stack: step LensPosition from start to end (AF cameras only)."""
+    global active_stack
+    if not camera.has_autofocus:
+        return jsonify(ok=False, error="lens sweep needs an autofocus camera"), 400
+    body = request.get_json(silent=True) or {}
+    sweep = {**CONFIG["sweep"], **{k: body[k] for k in ("start", "end", "steps", "settle_ms") if k in body}}
+    lo, hi, _ = camera.camera_controls["LensPosition"]
+    try:
+        start, end = float(sweep["start"]), float(sweep["end"])
+        steps, settle = int(sweep["steps"]), int(sweep["settle_ms"])
+    except (TypeError, ValueError) as exc:
+        return jsonify(ok=False, error=f"invalid sweep settings: {exc}"), 400
+    if not (lo <= start <= hi and lo <= end <= hi) or not 2 <= steps <= 200:
+        return jsonify(ok=False, error=f"LensPosition must be within {lo}..{hi}, steps 2..200"), 400
+    label = body.get("label", "")
+    with state_lock:
+        if active_stack:
+            return jsonify(ok=False, error=f"stack {active_stack['name']} still open"), 409
+        if recording["active"]:
+            return jsonify(ok=False, error="recording in progress"), 409
+        base = data_dir("stacks")
+        name = unique_stem(base, build_basename(label), "")
+        (base / name).mkdir()
+        meta = {"name": name, "label": label, "created": datetime.now().isoformat(timespec="seconds"),
+                "sweep": {"start": start, "end": end, "steps": steps, "settle_ms": settle}}
+        (base / name / "stack.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        active_stack = {"name": name, "dir": str(base / name), "count": 0, "sweep": True, "total": steps}
+    job = start_job("sweep", name, run_sweep, name, sweep_positions(start, end, steps), settle, True)
+    active_stack["job"] = job["id"]
+    return jsonify(ok=True, name=name, job=job["id"])
+
+
+@app.route("/api/jobs/<job_id>/cancel", methods=["POST"])
+def api_job_cancel(job_id):
+    job = jobs.get(job_id)
+    if not job:
+        abort(404)
+    job["cancel"] = True
+    if job["kind"] == "focus-stack" and job.get("pid") and job["status"] == "running":
+        try:
+            os.kill(job["pid"], 15)
+        except OSError:
+            pass
+    return jsonify(ok=True)
+
+
+@app.route("/api/stack/process/<name>", methods=["POST"])
+def api_stack_process(name):
+    if active_stack and active_stack["name"] == name:
+        return jsonify(ok=False, error="stack still open — end it first"), 409
+    safe_child(data_dir("stacks"), name)
+    running = latest_job("focus-stack", name)
+    if running and running["status"] in ("queued", "running"):
+        return jsonify(ok=False, error="already processing", job=running["id"]), 409
+    overrides = (request.get_json(silent=True) or {}).get("options") or {}
+    unknown = set(overrides) - set(CONFIG["focus_stack"])
+    if unknown:
+        return jsonify(ok=False, error=f"unknown options: {sorted(unknown)}"), 400
+    job = start_job("focus-stack", name, run_focus_stack, name, overrides)
+    return jsonify(ok=True, job=job["id"])
+
+
+@app.route("/api/jobs")
+def api_jobs():
+    with jobs_lock:
+        recent = sorted(jobs.values(), key=lambda j: j["created"], reverse=True)[:30]
+    return jsonify(jobs=[dict(j, log=j["log"][-5:]) for j in recent])
+
+
+@app.route("/api/jobs/<job_id>")
+def api_job(job_id):
+    job = jobs.get(job_id)
+    if not job:
+        abort(404)
+    return jsonify(job)
+
+
+@app.route("/api/stacks")
+def api_stacks():
+    base = data_dir("stacks")
+    stacks = []
+    for d in sorted((p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")),
+                    key=lambda p: p.stat().st_mtime, reverse=True):
+        frames = stack_frames(d, d.name)
+        job = latest_job("focus-stack", d.name)
+        meta_file = d / "stack.json"
+        meta = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
+        stacks.append({
+            "name": d.name,
+            "label": meta.get("label", ""),
+            "created": meta.get("created"),
+            "frames": [f.name for f in frames],
+            "outputs": stack_outputs(d, d.name),
+            "open": bool(active_stack and active_stack["name"] == d.name),
+            "job": job and {k: job[k] for k in ("id", "status", "error")},
+        })
+    return jsonify(stacks=stacks)
+
+
+def list_files(kind, exts, limit=100):
+    base = data_dir(kind)
+    files = sorted((f for f in base.iterdir() if f.is_file() and f.suffix.lower() in exts),
+                   key=lambda f: f.stat().st_mtime, reverse=True)[:limit]
+    return [{"name": f.name, "size": f.stat().st_size,
+             "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")}
+            for f in files]
+
+
+@app.route("/api/photos")
+def api_photos():
+    return jsonify(photos=list_files("photos", IMAGE_EXTS))
+
+
+@app.route("/api/videos")
+def api_videos():
+    return jsonify(videos=list_files("videos", VIDEO_EXTS))
+
+
+def drop_thumb(kind, relpath):
+    cache = data_dir(kind) / ".thumbs" / (relpath.replace("/", "__") + ".jpg")
+    cache.unlink(missing_ok=True)
+
+
+@app.route("/api/photos/<name>", methods=["DELETE"])
+def api_photo_delete(name):
+    path = safe_child(data_dir("photos"), name)
+    if not path.is_file():
+        abort(404)
+    path.unlink()
+    if path.suffix.lower() != ".json":
+        path.with_suffix(".json").unlink(missing_ok=True)
+    drop_thumb("photos", name)
+    return jsonify(ok=True)
+
+
+@app.route("/api/videos/<name>", methods=["DELETE"])
+def api_video_delete(name):
+    if recording["active"] and recording["path"] and Path(recording["path"]).name == name:
+        return jsonify(ok=False, error="video is still recording"), 409
+    path = safe_child(data_dir("videos"), name)
+    if not path.is_file():
+        abort(404)
+    path.unlink()
+    return jsonify(ok=True)
+
+
+@app.route("/api/stacks/<name>", methods=["DELETE"])
+def api_stack_delete(name):
+    if active_stack and active_stack["name"] == name:
+        return jsonify(ok=False, error="stack is still open"), 409
+    job = latest_job("focus-stack", name)
+    if job and job["status"] in ("queued", "running"):
+        return jsonify(ok=False, error="stack is being processed"), 409
+    stack_dir = safe_child(data_dir("stacks"), name)
+    if not stack_dir.is_dir():
+        abort(404)
+    shutil.rmtree(stack_dir)
+    for cached in (data_dir("stacks") / ".thumbs").glob(f"{name}__*"):
+        cached.unlink(missing_ok=True)
+    return jsonify(ok=True)
+
+
+@app.route("/api/stacks/<name>/frames", methods=["DELETE"])
+def api_stack_frames_delete(name):
+    """Drop the source frames of a processed stack, keeping the result."""
+    stack_dir = safe_child(data_dir("stacks"), name)
+    if active_stack and active_stack["name"] == name:
+        return jsonify(ok=False, error="stack is still open"), 409
+    job = latest_job("focus-stack", name)
+    if job and job["status"] in ("queued", "running"):
+        return jsonify(ok=False, error="stack is being processed"), 409
+    if "result" not in stack_outputs(stack_dir, name):
+        return jsonify(ok=False, error="stack has no result yet — frames kept"), 409
+    return jsonify(ok=True, deleted=delete_stack_frames(stack_dir, name))
+
+
+@app.route("/api/stacks/<name>/<filename>", methods=["DELETE"])
+def api_stack_file_delete(name, filename):
+    """Delete a single frame (or result) from a stack."""
+    if active_stack and active_stack["name"] == name:
+        return jsonify(ok=False, error="stack is still open"), 409
+    path = safe_child(safe_child(data_dir("stacks"), name), filename)
+    if not path.is_file() or path.name == "stack.json":
+        abort(404)
+    path.unlink()
+    if path.suffix.lower() in IMAGE_EXTS:
+        path.with_suffix(".json").unlink(missing_ok=True)
+    drop_thumb("stacks", f"{name}/{filename}")
+    return jsonify(ok=True)
+
+
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+    body = request.get_json(force=True) or {}
+    dest, kind, name = body.get("dest"), body.get("kind"), body.get("name", "")
+    if dest not in ("drive", "nas") or kind not in ("photo", "stack", "video") or not name:
+        return jsonify(ok=False, error="need dest (drive/nas), kind (photo/stack/video) and name"), 400
+    job = start_job("upload", f"{kind}:{name}", run_upload, dest, kind, name)
+    return jsonify(ok=True, job=job["id"])
+
+
+# --------------------------------------------------------------------------
+# Routes — settings
+# --------------------------------------------------------------------------
+
+EDITABLE_SETTINGS = {"filename_pattern", "image_format", "jpeg_quality", "png_compress_level",
+                     "save_metadata", "persist_controls", "next_seq", "focus_stack", "upload",
+                     "video", "camera", "sweep"}
+
+
+@app.route("/api/settings", methods=["GET", "POST"])
+def api_settings():
+    if request.method == "POST":
+        body = request.get_json(force=True) or {}
+        unknown = set(body) - EDITABLE_SETTINGS
+        if unknown:
+            return jsonify(ok=False, error=f"not editable: {sorted(unknown)}"), 400
+        if "filename_pattern" in body:
+            try:
+                format_name(body["filename_pattern"], "label", 1)
+            except (KeyError, ValueError, IndexError, AttributeError) as exc:
+                return jsonify(ok=False, error=f"invalid filename pattern: {exc!r}"), 400
+        with config_lock:
+            for key, value in body.items():
+                if isinstance(value, dict) and isinstance(CONFIG.get(key), dict):
+                    CONFIG[key] = deep_merge(CONFIG[key], value)
+                else:
+                    CONFIG[key] = value
+            save_config()
+    settings = {k: CONFIG.get(k) for k in sorted(EDITABLE_SETTINGS)}
+    try:
+        example = format_name(CONFIG["filename_pattern"], "Space_Marine", CONFIG.get("next_seq", 1))
+    except Exception as exc:
+        example = f"(error: {exc})"
+    return jsonify(ok=True, settings=settings, example_name=example)
+
+
+@app.route("/api/settings/preview_name", methods=["POST"])
+def api_preview_name():
+    body = request.get_json(force=True) or {}
+    try:
+        name = format_name(body.get("pattern", ""), body.get("label", "Space_Marine"),
+                           CONFIG.get("next_seq", 1))
+        return jsonify(ok=True, name=name)
+    except Exception as exc:
+        return jsonify(ok=False, error=repr(exc))
+
+
+# --------------------------------------------------------------------------
+# Routes — self-update (git based, see update.sh)
+# --------------------------------------------------------------------------
+
+def git(*args, timeout=30):
+    out = subprocess.run(["git", "-C", str(BASE_DIR), *args], capture_output=True, text=True, timeout=timeout)
+    if out.returncode != 0:
+        raise RuntimeError(out.stderr.strip() or f"git {args[0]} failed")
+    return out.stdout.strip()
+
+
+@app.route("/api/version")
+def api_version():
+    try:
+        return jsonify(ok=True, version=git("describe", "--tags", "--always", "--dirty"),
+                       branch=git("rev-parse", "--abbrev-ref", "HEAD"))
+    except Exception as exc:
+        return jsonify(ok=True, version="unknown", error=str(exc))
+
+
+@app.route("/api/update/check", methods=["POST"])
+def api_update_check():
+    git("fetch", "--quiet", "--tags", "origin", timeout=60)
+    behind = int(git("rev-list", "--count", "HEAD..@{u}"))
+    changes = git("log", "--format=%h %s", "HEAD..@{u}").splitlines() if behind else []
+    return jsonify(ok=True, behind=behind, changes=changes[:50],
+                   version=git("describe", "--tags", "--always", "--dirty"))
+
+
+def run_self_update(job):
+    if os.name == "nt":
+        raise RuntimeError("self-update only works on the Pi")
+    proc = subprocess.Popen([str(BASE_DIR / "update.sh"), "--no-restart"], cwd=BASE_DIR,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    for line in proc.stdout:
+        job_log(job, line)
+    if proc.wait() != 0:
+        raise RuntimeError("update.sh failed — see log")
+    if os.environ.get("INVOCATION_ID"):  # running under systemd: exit and let it restart us
+        job_log(job, "Restarting…")
+        threading.Timer(1.5, lambda: os._exit(0)).start()
+        return {"restarting": True}
+    job_log(job, "Updated — restart the app to load the new version")
+    return {"restarting": False}
+
+
+@app.route("/api/update/apply", methods=["POST"])
+def api_update_apply():
+    if recording["active"] or active_stack:
+        return jsonify(ok=False, error="stop recording / finish the stack first"), 409
+    with jobs_lock:
+        busy = [j for j in jobs.values() if j["status"] in ("queued", "running")]
+    if busy:
+        return jsonify(ok=False, error="wait until running jobs have finished"), 409
+    return jsonify(ok=True, job=start_job("update", "minicamera", run_self_update)["id"])
+
+
+@app.errorhandler(Exception)
+def handle_error(exc):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(exc, HTTPException):
+        return exc
+    log.exception("Unhandled error")
+    return jsonify(ok=False, error=str(exc)), 500
+
+
+# --------------------------------------------------------------------------
+
+def main():
+    global camera
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Miniature photo booth web app")
+    parser.add_argument("--host", default=CONFIG["server"]["host"])
+    parser.add_argument("--port", type=int, default=CONFIG["server"]["port"])
+    parser.add_argument("--demo", action="store_true", help="run without a camera")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if args.demo:
+        os.environ["MINICAMERA_DEMO"] = "1"
+    camera = open_camera()
+    atexit.register(lambda: camera.close())
+    restore_controls(camera)
+    binary = find_focus_stack()
+    log.info("focus-stack: %s", binary or "NOT FOUND (run ./install.sh)")
+    app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
+
+
+if __name__ == "__main__":
+    main()

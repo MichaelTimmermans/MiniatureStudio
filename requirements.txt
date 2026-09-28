@@ -1,0 +1,5 @@
+# On the Pi these come from apt (see apt-packages.txt); picamera2 must be the apt build.
+# pip is only for developing in demo mode (python app.py --demo).
+flask>=2.2
+pillow>=9
+numpy>=1.24
