@@ -125,3 +125,8 @@ diffraction on this sensor; focus stacking gives more depth of field instead.
 
 MIT — see [LICENSE](LICENSE).
 The bundled focus-stack is © Petteri Aimonen, also MIT (see `vendor/focus-stack/LICENSE.md`).
+
+## Built with Claude
+
+This project was developed with the help of [Claude Code](https://claude.com/claude-code),
+Anthropic's AI coding assistant.
