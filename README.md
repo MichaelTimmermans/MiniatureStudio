@@ -11,14 +11,14 @@ gallery, and (automatic) upload to Google Drive or a NAS.
 On a Raspberry Pi running Raspberry Pi OS (Bookworm or newer), as your normal user:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MichaelTimmermans/MiniCamera/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/MichaelTimmermans/PhotoBoothCamera/main/install.sh | bash
 ```
 
 Or from a clone:
 
 ```bash
-git clone --recurse-submodules https://github.com/MichaelTimmermans/MiniCamera.git
-cd MiniCamera && ./install.sh
+git clone --recurse-submodules https://github.com/MichaelTimmermans/PhotoBoothCamera.git
+cd PhotoBoothCamera && ./install.sh
 ```
 
 The installer:

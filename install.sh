@@ -10,7 +10,7 @@
 # Safe to run again: an existing install is updated instead.
 set -euo pipefail
 
-REPO_URL="${MINICAMERA_REPO:-https://github.com/MichaelTimmermans/MiniCamera.git}"
+REPO_URL="${MINICAMERA_REPO:-https://github.com/MichaelTimmermans/PhotoBoothCamera.git}"
 BRANCH="${MINICAMERA_BRANCH:-main}"
 INSTALL_DIR="${MINICAMERA_DIR:-/opt/minicamera}"
 SERVICE=minicamera
