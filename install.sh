@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# PhotoBoothCamera installer for Raspberry Pi OS (Bookworm or newer).
+# MiniatureStudio installer for Raspberry Pi OS (Bookworm or newer).
 #
 #   curl -fsSL <raw url of this file> | bash
 # or, from a clone:
 #   ./install.sh
 #
 # Installs apt dependencies, clones the app (with the focus-stack submodule)
-# into /opt/photoboothcamera, builds focus-stack, and sets up a systemd service.
+# into /opt/miniaturestudio, builds focus-stack, and sets up a systemd service.
 # Safe to run again: an existing install is updated instead.
 set -euo pipefail
 
-REPO_URL="${PHOTOBOOTH_REPO:-https://github.com/MichaelTimmermans/PhotoBoothCamera.git}"
-BRANCH="${PHOTOBOOTH_BRANCH:-main}"
-INSTALL_DIR="${PHOTOBOOTH_DIR:-/opt/photoboothcamera}"
-SERVICE=photoboothcamera
+REPO_URL="${MINIATURESTUDIO_REPO:-https://github.com/MichaelTimmermans/MiniatureStudio.git}"
+BRANCH="${MINIATURESTUDIO_BRANCH:-main}"
+INSTALL_DIR="${MINIATURESTUDIO_DIR:-/opt/miniaturestudio}"
+SERVICE=miniaturestudio
 RUN_USER="${SUDO_USER:-$USER}"
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -57,7 +57,7 @@ fi
 say "Installing systemd service '$SERVICE'"
 sudo tee /etc/systemd/system/$SERVICE.service >/dev/null <<EOF
 [Unit]
-Description=PhotoBoothCamera miniature photo booth
+Description=MiniatureStudio — photo studio for tabletop miniatures
 After=network-online.target
 Wants=network-online.target
 
@@ -76,7 +76,7 @@ if ! groups "$RUN_USER" | grep -qw video; then
   sudo usermod -aG video "$RUN_USER"
   say "Added $RUN_USER to the 'video' group (camera access)"
 fi
-sudo ln -sf "$INSTALL_DIR/update.sh" /usr/local/bin/photoboothcamera-update
+sudo ln -sf "$INSTALL_DIR/update.sh" /usr/local/bin/miniaturestudio-update
 "$INSTALL_DIR/scripts/install-mount-helper.sh" "$RUN_USER"
 sudo systemctl daemon-reload
 sudo systemctl enable $SERVICE
@@ -86,4 +86,4 @@ sudo systemctl restart $SERVICE
 PORT=$(python3 -c "import json;print(json.load(open('$INSTALL_DIR/config.example.json'))['server']['port'])")
 say "Done! Open http://$(hostname).local:$PORT in your browser"
 say "Connect Google Drive or a NAS under Settings in the web app"
-say "Update later with: photoboothcamera-update (or Settings → Check for updates)"
+say "Update later with: miniaturestudio-update (or Settings → Check for updates)"

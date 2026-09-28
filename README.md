@@ -1,7 +1,7 @@
-# PhotoBoothCamera — photo booth for tabletop miniatures
+# MiniatureStudio — photo studio for tabletop miniatures
 
 A web app (Flask + picamera2) for a Raspberry Pi with a camera, built for
-photographing miniatures in a fixed photo booth: live preview, every camera
+photographing miniatures in a small light box or booth: live preview, every camera
 control, photo/video, **focus stacking** with the bundled
 [focus-stack](https://github.com/PetteriAimonen/focus-stack), camera presets, a
 gallery, and (automatic) upload to Google Drive or a NAS.
@@ -11,25 +11,25 @@ gallery, and (automatic) upload to Google Drive or a NAS.
 On a Raspberry Pi running Raspberry Pi OS (Bookworm or newer), as your normal user:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MichaelTimmermans/PhotoBoothCamera/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/MichaelTimmermans/MiniatureStudio/main/install.sh | bash
 ```
 
 Or from a clone:
 
 ```bash
-git clone --recurse-submodules https://github.com/MichaelTimmermans/PhotoBoothCamera.git
-cd PhotoBoothCamera && ./install.sh
+git clone --recurse-submodules https://github.com/MichaelTimmermans/MiniatureStudio.git
+cd MiniatureStudio && ./install.sh
 ```
 
 The installer:
 
 1. installs the system packages from [`apt-packages.txt`](apt-packages.txt)
    (picamera2, Flask, OpenCV, ffmpeg, rclone, cifs-utils, nfs-common, …);
-2. clones the app to `/opt/photoboothcamera` (or uses your clone);
+2. clones the app to `/opt/miniaturestudio` (or uses your clone);
 3. builds focus-stack from `vendor/focus-stack` (a git submodule) — roughly a
    quarter of an hour on a Pi 3B;
 4. installs a small root helper for mounting a NAS (see below);
-5. installs the `photoboothcamera` systemd service (starts at boot).
+5. installs the `miniaturestudio` systemd service (starts at boot).
 
 Then open `http://<hostname>.local:8000`.
 
@@ -37,7 +37,7 @@ Then open `http://<hostname>.local:8000`.
 
 - In the web app: **Settings → Check for updates → Install update**. The app
   restarts by itself.
-- Or in a terminal: `photoboothcamera-update` (`--check` to only look).
+- Or in a terminal: `miniaturestudio-update` (`--check` to only look).
 
 Updates follow the `main` branch via `git pull`. New system packages, a new
 focus-stack version or a new mount helper are picked up automatically.
@@ -103,7 +103,7 @@ A pattern in Python `str.format` syntax, e.g. `{dt:%Y%m%d_%H%M%S}_{label}` or
 - **NAS**: **Settings → NAS**: enter server, share and (for SMB) credentials, then
   **Mount NAS**. The share is added to `/etc/fstab` (with `nofail`, so a missing
   NAS never blocks booting) and mounted at every boot. Credentials are stored in
-  `/etc/photoboothcamera/nas.cred`, readable by root only. The app refuses to copy
+  `/etc/miniaturestudio/nas.cred`, readable by root only. The app refuses to copy
   when the share is not mounted, so the SD card never fills up.
 
 ## Developing without a Pi

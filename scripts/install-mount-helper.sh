@@ -6,8 +6,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_USER="${1:-$(stat -c %U "$ROOT")}"
 
-sudo install -o root -g root -m 0755 "$ROOT/scripts/photoboothcamera-mount" /usr/local/sbin/photoboothcamera-mount
-echo "$RUN_USER ALL=(root) NOPASSWD: /usr/local/sbin/photoboothcamera-mount" | sudo tee /etc/sudoers.d/photoboothcamera >/dev/null
-sudo chmod 0440 /etc/sudoers.d/photoboothcamera
-sudo visudo -cf /etc/sudoers.d/photoboothcamera >/dev/null
+sudo install -o root -g root -m 0755 "$ROOT/scripts/miniaturestudio-mount" /usr/local/sbin/miniaturestudio-mount
+echo "$RUN_USER ALL=(root) NOPASSWD: /usr/local/sbin/miniaturestudio-mount" | sudo tee /etc/sudoers.d/miniaturestudio >/dev/null
+sudo chmod 0440 /etc/sudoers.d/miniaturestudio
+sudo visudo -cf /etc/sudoers.d/miniaturestudio >/dev/null
 echo "==> NAS mount helper installed for $RUN_USER"

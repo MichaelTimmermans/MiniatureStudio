@@ -54,8 +54,8 @@
   "upload": {
     "auto_drive": true,
     "auto_nas": false,
-    "rclone_remote": "gdrive:PhotoBoothCamera",
-    "nas_path": "/mnt/nas/photoboothcamera",
+    "rclone_remote": "gdrive:MiniatureStudio",
+    "nas_path": "/mnt/nas/miniaturestudio",
     "nas_require_mount": true,
     "stack_frames": false
   }
