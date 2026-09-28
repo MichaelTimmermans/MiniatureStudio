@@ -1,111 +1,126 @@
-# MiniCamera — photo booth voor tabletop-miniaturen
+# MiniCamera — photo booth for tabletop miniatures
 
-Webapp (Flask + picamera2) voor een Raspberry Pi met camera, gemaakt om
-miniaturen te fotograferen in een vaste photo booth: live preview, alle
-camera-controls, foto/video, **focus stacking** met het meegeleverde
-[focus-stack](https://github.com/PetteriAimonen/focus-stack), galerij en
-(auto-)upload naar Google Drive of een NAS.
+A web app (Flask + picamera2) for a Raspberry Pi with a camera, built for
+photographing miniatures in a fixed photo booth: live preview, every camera
+control, photo/video, **focus stacking** with the bundled
+[focus-stack](https://github.com/PetteriAimonen/focus-stack), camera presets, a
+gallery, and (automatic) upload to Google Drive or a NAS.
 
-## Installeren
+## Install
 
-Op een Raspberry Pi met Raspberry Pi OS (Bookworm of nieuwer), als gewone gebruiker:
+On a Raspberry Pi running Raspberry Pi OS (Bookworm or newer), as your normal user:
 
 ```bash
 curl -fsSL https://git.timmermansmichael.be/Michael/MiniCamera/raw/branch/main/install.sh | bash
 ```
 
-Of vanuit een clone:
+Or from a clone:
 
 ```bash
 git clone --recurse-submodules https://git.timmermansmichael.be/Michael/MiniCamera.git
 cd MiniCamera && ./install.sh
 ```
 
-De installer:
+The installer:
 
-1. installeert de systeempakketten uit [`apt-packages.txt`](apt-packages.txt)
-   (picamera2, Flask, OpenCV, ffmpeg, rclone, …);
-2. cloont de app naar `/opt/minicamera` (of gebruikt je clone);
-3. bouwt focus-stack uit `vendor/focus-stack` (git submodule) — op een Pi 3B
-   duurt dat een kwartier of zo;
-4. installeert de systemd-service `minicamera` (start automatisch bij boot).
+1. installs the system packages from [`apt-packages.txt`](apt-packages.txt)
+   (picamera2, Flask, OpenCV, ffmpeg, rclone, cifs-utils, nfs-common, …);
+2. clones the app to `/opt/minicamera` (or uses your clone);
+3. builds focus-stack from `vendor/focus-stack` (a git submodule) — roughly a
+   quarter of an hour on a Pi 3B;
+4. installs a small root helper for mounting a NAS (see below);
+5. installs the `minicamera` systemd service (starts at boot).
 
-Open daarna `http://<hostnaam>.local:8000`.
+Then open `http://<hostname>.local:8000`.
 
-## Updaten
+## Updating
 
-- In de webapp: **Instellingen → Controleer op updates → Update installeren**.
-  De app herstart zelf.
-- Of in een terminal: `minicamera-update` (`--check` om enkel te kijken).
+- In the web app: **Settings → Check for updates → Install update**. The app
+  restarts by itself.
+- Or in a terminal: `minicamera-update` (`--check` to only look).
 
-Updates volgen de `main`-branch via `git pull`. Nieuwe systeempakketten of een
-nieuwe focus-stack-versie worden automatisch meegenomen.
+Updates follow the `main` branch via `git pull`. New system packages, a new
+focus-stack version or a new mount helper are picked up automatically.
 
-## Camera's
+## Cameras and presets
 
-Aangesloten camera's worden bij het opstarten automatisch gedetecteerd
-(`Picamera2.global_camera_info()`); kies de actieve camera in het tabblad
-**Camera**. CSI-camera's zijn niet hot-pluggable: sluit ze aan met de Pi uit.
-Controle: `rpicam-hello --list-cameras`.
+Connected cameras are detected at startup (`Picamera2.global_camera_info()`).
+In the **Camera** tab you pick the active camera and can mark one as the
+default (opened at boot). CSI cameras are not hot-pluggable: connect them with
+the Pi switched off. Check with `rpicam-hello --list-cameras`.
 
-Alle libcamera-controls van de camera verschijnen automatisch in de UI.
-Instellingen worden per cameramodel onthouden.
+All libcamera controls of the camera appear in the UI automatically. Save them
+as **presets** (per camera model); mark one preset as **Load at boot**. Without
+a boot preset, the last used controls are restored.
 
-### Autofocus-camera's (bv. Camera Module 3)
+### Autofocus cameras (e.g. Camera Module 3)
 
-Als de camera `AfMode`/`LensPosition` ondersteunt:
+When the camera supports `AfMode`/`LensPosition`:
 
-- **Autofocus**-knop (één AF-cyclus, daarna wordt de lens vergrendeld in manual);
-- **Lens-sweep**: stel start/einde-LensPosition (dioptrie: 0 = oneindig,
-  hoger = dichterbij), aantal stappen en wachttijd in. De app neemt alle frames
-  en stackt ze automatisch.
-- Stacks worden altijd automatisch verwerkt (er is geen Process-knop; enkel
-  "Opnieuw verwerken" als een run mislukte).
+- an **Autofocus** button (one AF cycle, then the lens is locked in manual);
+- **Lens sweep**: set start/end LensPosition (dioptres: 0 = infinity, higher =
+  closer), number of steps and settle time. The app takes all frames and stacks
+  them automatically;
+- stacks are always processed automatically (no Process button; only
+  "Reprocess" if a run failed).
+
+Manual-focus cameras such as the HQ Camera do not show the sweep; there you
+stack manually (Start stack → Space per frame → Finish).
 
 ## Focus stacking
 
-Frames van een stack komen in `stacks/<naam>/<naam>_1.png`, `_2.png`, …;
-het resultaat is `<naam>_stacked.png`. De opties van focus-stack (consistency,
-denoise, batchsize, uitlijning, dieptekaart, …) staan in **Instellingen** en
-kunnen per run overschreven worden in het tabblad **Stacks**.
+Frames of a stack go to `stacks/<name>/<name>_1.png`, `_2.png`, …; the result
+is `<name>_stacked.png`. focus-stack's options (consistency, denoise, batch
+size, alignment, depth map, …) are in **Settings** and can be overridden per
+run in the **Stacks** tab.
 
-- `batchsize = 0` zet alle frames in één batch (beste kwaliteit, maar veel RAM:
-  op een Pi 3B met 1 GB houd je dit best op 4).
-- "Bronframes verwijderen na geslaagde stack" staat standaard aan; worden
-  frames ook geüpload, dan gebeurt dat eerst.
-- Tip voor een Pi 3B: vergroot de swap (`sudo nano /etc/dphys-swapfile`,
-  `CONF_SWAPSIZE=2048`) als focus-stack stopt door geheugentekort.
+- `batchsize = 0` merges all frames in one batch (best quality, lots of RAM: on
+  a 1 GB Pi 3B keep it at 4).
+- "Delete source frames after a successful stack" is on by default; if frames
+  are uploaded as well, that happens first.
+- Pi 3B tip: enlarge swap (`sudo nano /etc/dphys-swapfile`,
+  `CONF_SWAPSIZE=2048`) if focus-stack gets killed for lack of memory.
 
-## Bestandsnamen
+## Jobs
 
-Patroon met Python `str.format`-syntax, bv. `{dt:%Y%m%d_%H%M%S}_{label}` of
-`{seq:04d}_{label}`. `{seq}` telt op na elk gebruik.
+Long tasks run in the background so you can keep shooting: focus-stack
+processing, uploads, lens sweeps and updates. The **Jobs** tab shows their
+status and logs.
 
-## Uploaden
+## File names
 
-- **Google Drive** via rclone: `rclone config` → remote `gdrive` aanmaken
-  (headless: kies "n" bij auto config en volg de instructies). Stel het doel in
-  bij Instellingen (standaard `gdrive:MiniCamera`). Is de remote aanwezig, dan
-  gaan foto's, video's en verwerkte stacks er **automatisch** heen (uit te
-  zetten).
-- **NAS**: mount de share (bv. via `/etc/fstab`) en vul het pad in. De app weigert
-  te kopiëren als het pad niet gemount is, zodat de SD-kaart niet volloopt.
+A pattern in Python `str.format` syntax, e.g. `{dt:%Y%m%d_%H%M%S}_{label}` or
+`{seq:04d}_{label}`. `{seq}` increments every time it is used.
 
-## Ontwikkelen zonder Pi
+## Upload
+
+- **Google Drive**: **Settings → Connect Google Drive**. Sign in with Google in
+  the tab that opens. Afterwards Google redirects to a `http://127.0.0.1:53682/…`
+  address; when you are not browsing on the Pi itself that page fails to load —
+  copy the full address and paste it into the app. The app then configures an
+  rclone remote. Photos, videos and processed stacks are uploaded
+  **automatically** (can be switched off).
+- **NAS**: **Settings → NAS**: enter server, share and (for SMB) credentials, then
+  **Mount NAS**. The share is added to `/etc/fstab` (with `nofail`, so a missing
+  NAS never blocks booting) and mounted at every boot. Credentials are stored in
+  `/etc/minicamera/nas.cred`, readable by root only. The app refuses to copy
+  when the share is not mounted, so the SD card never fills up.
+
+## Developing without a Pi
 
 ```bash
 pip install -r requirements.txt
 python app.py --demo --port 8000
 ```
 
-Demo-modus simuleert een camera (met AF, zodat de sweep te testen is).
+Demo mode simulates a camera (with AF, so the sweep can be tested).
 
-## Hardware waarvoor dit gemaakt is
+## Hardware this was built for
 
-Raspberry Pi 3B, HQ Camera (IMX477), 5-50 mm CS-mount varifocal met macroring
-(manuele focus), booth van 30×30×40 cm. Werk op F8: kleiner diafragma geeft op
-deze sensor diffractie, focus stacking geeft méér scherptediepte.
+Raspberry Pi 3B, HQ Camera (IMX477), 5-50 mm CS-mount varifocal with macro ring
+(manual focus), 30×30×40 cm booth. Shoot at F8: smaller apertures cause
+diffraction on this sensor; focus stacking gives more depth of field instead.
 
-## Licentie
+## License
 
-focus-stack © Petteri Aimonen, MIT-licentie (zie `vendor/focus-stack/LICENSE.md`).
+focus-stack © Petteri Aimonen, MIT license (see `vendor/focus-stack/LICENSE.md`).

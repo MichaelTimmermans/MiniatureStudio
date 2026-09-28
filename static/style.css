@@ -102,3 +102,7 @@ dialog#viewer::backdrop { background: rgba(0,0,0,.8); }
 .viewer-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; }
 .viewer-bar a { margin-right: 8px; }
 #viewer-body img, #viewer-body video { max-width: 100%; max-height: 82vh; display: block; margin: auto; }
+.ok-text { color: var(--ok); }
+input.wide { flex: 1; min-width: 200px; }
+fieldset .row select { max-width: 100%; }
+ol { padding-left: 20px; }

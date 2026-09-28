@@ -10,3 +10,5 @@ pkg-config
 libopencv-dev
 ffmpeg
 rclone
+cifs-utils
+nfs-common

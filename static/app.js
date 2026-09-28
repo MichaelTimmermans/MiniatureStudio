@@ -48,20 +48,24 @@ let settings = {};
 document.querySelectorAll("#tabs button").forEach((btn) => btn.addEventListener("click", () => {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b === btn));
   document.querySelectorAll(".tab").forEach((t) => { t.hidden = t.id !== "tab-" + btn.dataset.tab; });
-  ({ controls: loadControls, stacks: loadStacks, gallery: loadGallery, jobs: loadJobs, settings: loadSettings })[btn.dataset.tab]?.();
+  const loaders = {
+    controls: [loadControls], stacks: [loadStacks], gallery: [loadGallery], jobs: [loadJobs],
+    settings: [loadSettings, loadDrive, loadNas],
+  };
+  (loaders[btn.dataset.tab] || []).forEach((fn) => fn().catch((e) => console.warn(e)));
 }));
 
 // ---------------------------------------------------------------- badges / status
 function renderBadges() {
   const b = $("#badges");
   b.replaceChildren();
-  if (info.demo) b.append(el("span", { class: "badge warn" }, "DEMO (geen camera)"));
+  if (info.demo) b.append(el("span", { class: "badge warn" }, "DEMO (no camera)"));
   else if (info.model) b.append(el("span", { class: "badge" }, info.model));
   b.append(el("span", { class: "badge " + (info.focus_stack?.available ? "ok" : "warn"),
     title: info.focus_stack?.binary || "run ./install.sh" },
-    info.focus_stack?.available ? "focus-stack ✓" : "focus-stack ontbreekt"));
+    info.focus_stack?.available ? "focus-stack ✓" : "focus-stack missing"));
   b.append(el("span", { class: "badge " + (info.drive ? "ok" : "") },
-    info.drive ? (settings.upload?.auto_drive ? "Drive auto-upload" : "Drive ✓") : "Geen Drive"));
+    info.drive ? (settings.upload?.auto_drive ? "Drive auto-upload" : "Drive ✓") : "No Drive"));
   if (info.nas) b.append(el("span", { class: "badge ok" }, "NAS ✓"));
   if (info.has_autofocus) b.append(el("span", { class: "badge" }, "AF"));
   if (status.recording?.active) b.append(el("span", { class: "badge rec" }, "● REC"));
@@ -77,7 +81,7 @@ async function refreshStatus() {
   $("#btn-sweep-cancel").hidden = !(stack && stack.sweep);
   $("#btn-photo").disabled = status.recording.active;
   $("#stack-status").textContent = stack
-    ? `Stack ${stack.name}: ${stack.count}${stack.total ? "/" + stack.total : ""} frames${stack.sweep ? " (sweep bezig)" : ""}`
+    ? `Stack ${stack.name}: ${stack.count}${stack.total ? "/" + stack.total : ""} frames${stack.sweep ? " (sweep running)" : ""}`
     : "";
   const rec = status.recording;
   $("#btn-video").textContent = rec.active ? "⏹ Stop video" : "⏺ Start video";
@@ -96,20 +100,20 @@ async function updateNameExample() {
 }
 $("#label").addEventListener("input", updateNameExample);
 
-function uploadNote(r) { return r.uploads && r.uploads.length ? " — upload gestart" : ""; }
+function uploadNote(r) { return r.uploads && r.uploads.length ? " — upload started" : ""; }
 
 $("#btn-photo").addEventListener("click", () => guarded(async () => {
   $("#btn-photo").disabled = true;
-  say("Foto nemen…");
+  say("Taking photo…");
   try {
     const r = await api("/api/capture", "POST", { label: label() });
-    say(`Opgeslagen: ${r.file} (${r.seconds}s)${uploadNote(r)}`);
+    say(`Saved: ${r.file} (${r.seconds}s)${uploadNote(r)}`);
   } finally { $("#btn-photo").disabled = false; }
 }));
 
 $("#btn-stack-start").addEventListener("click", () => guarded(async () => {
   const r = await api("/api/stack/start", "POST", { label: label() });
-  say(`Stack ${r.name} gestart — zet focus en neem frames`);
+  say(`Stack ${r.name} started — set focus and take frames`);
   refreshStatus();
 }));
 
@@ -118,7 +122,7 @@ async function stackFrame() {
   if (frameBusy) return;
   frameBusy = true;
   try {
-    say("Frame nemen…");
+    say("Taking frame…");
     const r = await api("/api/stack/frame", "POST", {});
     say(`Frame ${r.frame}: ${r.file} (${r.seconds}s)`);
   } catch (e) { say(e.message, true); }
@@ -128,7 +132,7 @@ $("#btn-stack-frame").addEventListener("click", stackFrame);
 
 $("#btn-stack-end").addEventListener("click", () => guarded(async () => {
   const r = await api("/api/stack/end", "POST", { process: $("#stack-autoprocess").checked });
-  say(`Stack ${r.name} afgesloten (${r.frames} frames)` + (r.job ? " — verwerking gestart" : "") + uploadNote(r));
+  say(`Stack ${r.name} finished (${r.frames} frames)` + (r.job ? " — processing started" : "") + uploadNote(r));
   if (r.job) watchJob(r.job);
   refreshStatus();
 }));
@@ -136,10 +140,10 @@ $("#btn-stack-end").addEventListener("click", () => guarded(async () => {
 $("#btn-video").addEventListener("click", () => guarded(async () => {
   if (status.recording?.active) {
     const r = await api("/api/video/stop", "POST", {});
-    say(`Video opgeslagen: ${r.file} (${r.seconds}s)${uploadNote(r)}`);
+    say(`Video saved: ${r.file} (${r.seconds}s)${uploadNote(r)}`);
   } else {
     const r = await api("/api/video/start", "POST", { label: label() });
-    say(`Opname gestart: ${r.file}`);
+    say(`Recording started: ${r.file}`);
   }
   refreshStatus();
 }));
@@ -156,7 +160,7 @@ function sweepBody() {
 }
 $("#btn-sweep").addEventListener("click", () => guarded(async () => {
   const r = await api("/api/stack/sweep", "POST", sweepBody());
-  say(`Sweep ${r.name} gestart`);
+  say(`Sweep ${r.name} started`);
   watchJob(r.job);
   refreshStatus();
 }));
@@ -197,10 +201,10 @@ function watchJob(id) {
     }
     watched.delete(id);
     if (job.status === "done") {
-      say(`${job.kind} ${job.name} klaar` + (job.result?.output ? ` → ${job.result.output}` : ""));
+      say(`${job.kind} ${job.name} done` + (job.result?.output ? ` → ${job.result.output}` : ""));
       if (job.result?.process_job) watchJob(job.result.process_job);
     } else {
-      say(`${job.kind} ${job.name} mislukt: ${job.error}`, true);
+      say(`${job.kind} ${job.name} failed: ${job.error}`, true);
     }
     refreshStatus();
     if (!$("#tab-stacks").hidden) loadStacks();
@@ -212,14 +216,14 @@ async function loadJobs() {
   const r = await api("/api/jobs");
   const box = $("#jobs");
   box.replaceChildren();
-  if (!r.jobs.length) box.append(el("p", { class: "muted" }, "Nog geen jobs."));
+  if (!r.jobs.length) box.append(el("p", { class: "muted" }, "No jobs yet."));
   for (const j of r.jobs) {
     box.append(el("div", { class: "card" },
       el("div", { class: "row" },
         el("strong", {}, `${j.kind}`), el("span", {}, j.name),
         el("span", { class: "badge " + ({ done: "ok", error: "warn", running: "", queued: "" })[j.status] }, j.status),
         (j.status === "running" || j.status === "queued") && j.kind !== "upload"
-          ? el("button", { onclick: () => api(`/api/jobs/${j.id}/cancel`, "POST", {}).then(loadJobs) }, "Annuleren") : null,
+          ? el("button", { onclick: () => api(`/api/jobs/${j.id}/cancel`, "POST", {}).then(loadJobs) }, "Cancel") : null,
         el("button", { onclick: async () => {
           const full = await api(`/api/jobs/${j.id}`);
           box.querySelector(`pre[data-id="${j.id}"]`).textContent = full.log.join("\n");
@@ -323,26 +327,84 @@ function controlRow(c) {
     input = el("input", { value: JSON.stringify(c.value), class: "json",
       onchange: (e) => queueControl(c.name, e.target.value) });
   }
-  const reset = el("button", { class: "tiny", title: `standaard: ${JSON.stringify(c.default)}`,
+  const reset = el("button", { class: "tiny", title: `default: ${JSON.stringify(c.default)}`,
     onclick: () => { if (c.default !== null) { queueControl(c.name, c.default); setTimeout(loadControls, 600); } } }, "↺");
   return el("div", { class: "control", "data-name": c.name.toLowerCase() },
     el("label", { title: `${JSON.stringify(c.min)} … ${JSON.stringify(c.max)}` }, c.name), input, reset);
 }
 
+let cameraState = {};
 async function loadCameras() {
-  const r = await api("/api/cameras");
+  cameraState = await api("/api/cameras");
+  const r = cameraState;
   $("#camera-select").replaceChildren(...r.cameras.map((c) =>
     el("option", { value: c.index, selected: c.index === r.active },
-      `${c.index}: ${c.model}${c.location !== null && c.location !== undefined ? ` (poort ${c.location})` : ""}`)));
+      `${c.index}: ${c.model}${c.location !== null && c.location !== undefined ? ` (port ${c.location})` : ""}`
+      + (c.index === r.default ? " ★ default" : ""))));
+  $("#btn-camera-default").disabled = r.active === r.default;
 }
 $("#camera-select").addEventListener("change", (e) => guarded(async () => {
-  $("#live").textContent = "Camera wisselen…";
+  $("#live").textContent = "Switching camera…";
   await api("/api/cameras", "POST", { index: parseInt(e.target.value, 10) });
   location.reload();  // AF/sweep/controls all depend on the camera
+}, "#live"));
+$("#btn-camera-default").addEventListener("click", () => guarded(async () => {
+  await api("/api/cameras/default", "POST", { index: cameraState.active });
+  loadCameras();
+}, "#live"));
+
+// presets: named control sets per camera model; one can be loaded at boot
+let presetState = {};
+async function loadPresets() {
+  presetState = await api("/api/presets");
+  const r = presetState;
+  $("#preset-model").textContent = r.model;
+  const sel = $("#preset-select");
+  const previous = sel.value;
+  sel.replaceChildren(...(r.presets.length
+    ? r.presets.map((n) => el("option", { value: n, selected: n === previous || (!previous && n === r.default) },
+        n + (n === r.default ? " ★ boot" : "")))
+    : [el("option", { value: "" }, "(no presets yet)")]));
+  const none = !r.presets.length;
+  ["#btn-preset-load", "#btn-preset-delete", "#btn-preset-default"].forEach((b) => { $(b).disabled = none; });
+  $("#btn-preset-default").textContent = sel.value && sel.value === r.default ? "Don't load at boot" : "Load at boot";
+  $("#preset-info").textContent = r.default
+    ? `"${r.default}" is loaded at every boot.`
+    : "No boot preset — the last used controls are restored at boot.";
+}
+$("#preset-select").addEventListener("change", () => {
+  $("#btn-preset-default").textContent = $("#preset-select").value === presetState.default ? "Don't load at boot" : "Load at boot";
+});
+$("#btn-preset-load").addEventListener("click", () => guarded(async () => {
+  await api(`/api/presets/${enc($("#preset-select").value)}/load`, "POST", {});
+  await loadControls();
+  $("#live").textContent = `Preset "${$("#preset-select").value}" loaded`;
+}, "#live"));
+$("#btn-preset-save").addEventListener("click", () => guarded(async () => {
+  const name = prompt("Preset name (saves the current camera controls):", $("#preset-select").value || "");
+  if (!name) return;
+  if (presetState.presets.includes(name) && !confirm(`Overwrite preset "${name}"?`)) return;
+  const r = await api("/api/presets", "POST", { name });
+  await loadPresets();
+  $("#preset-select").value = r.name;
+  $("#live").textContent = `Preset "${r.name}" saved`;
+}, "#live"));
+$("#btn-preset-delete").addEventListener("click", () => guarded(async () => {
+  const name = $("#preset-select").value;
+  if (!confirm(`Delete preset "${name}"?`)) return;
+  await api(`/api/presets/${enc(name)}`, "DELETE");
+  $("#preset-select").value = "";
+  loadPresets();
+}, "#live"));
+$("#btn-preset-default").addEventListener("click", () => guarded(async () => {
+  const name = $("#preset-select").value;
+  await api("/api/presets/default", "POST", { name: name === presetState.default ? null : name });
+  loadPresets();
 }, "#live"));
 
 async function loadControls() {
   loadCameras().catch(() => {});
+  loadPresets().catch(() => {});
   const r = await api("/api/controls");
   controlsDesc = r.controls;
   $("#controls").replaceChildren(...controlsDesc.map(controlRow));
@@ -360,13 +422,13 @@ function applyFilter() {
 }
 $("#control-filter").addEventListener("input", applyFilter);
 $("#btn-controls-reset").addEventListener("click", () => guarded(async () => {
-  if (!confirm("Alle camera-controls terugzetten naar standaard?")) return;
+  if (!confirm("Reset all camera controls to their defaults?")) return;
   await api("/api/controls", "POST", { reset: true });
   loadControls();
 }, "#live"));
 $("#btn-af").addEventListener("click", () => guarded(async () => {
   const r = await api("/api/autofocus/trigger", "POST", {});
-  $("#live").textContent = `Autofocus ${r.ok ? "gelukt" : "mislukt"} — LensPosition ${r.lens_position}`;
+  $("#live").textContent = `Autofocus ${r.ok ? "succeeded" : "failed"} — LensPosition ${r.lens_position}`;
 }, "#live"));
 setInterval(async () => {
   if ($("#tab-controls").hidden || document.hidden) return;
@@ -387,7 +449,7 @@ $("#viewer-close").addEventListener("click", () => { $("#viewer").close(); $("#v
 function uploadButtons(kind, name) {
   const mk = (dest, text) => el("button", { onclick: () => guarded(async () => {
     const r = await api("/api/upload", "POST", { dest, kind, name });
-    say(`Upload naar ${dest} gestart`);
+    say(`Upload to ${dest} started`);
     watchJob(r.job);
   }) }, text);
   return [info.drive ? mk("drive", "→ Drive") : null, info.nas ? mk("nas", "→ NAS") : null];
@@ -395,10 +457,10 @@ function uploadButtons(kind, name) {
 
 function deleteButton(url, what, after) {
   return el("button", { class: "danger", onclick: () => guarded(async () => {
-    if (!confirm(`${what} definitief verwijderen?`)) return;
+    if (!confirm(`Permanently delete ${what}?`)) return;
     await api(url, "DELETE");
     after();
-  }) }, "Verwijder");
+  }) }, "Delete");
 }
 
 // ---------------------------------------------------------------- gallery
@@ -406,7 +468,7 @@ async function loadGallery() {
   const [p, v] = await Promise.all([api("/api/photos"), api("/api/videos")]);
   const photos = $("#photos");
   photos.replaceChildren();
-  if (!p.photos.length) photos.append(el("p", { class: "muted" }, "Nog geen foto's."));
+  if (!p.photos.length) photos.append(el("p", { class: "muted" }, "No photos yet."));
   for (const f of p.photos) {
     const url = `/media/photos/${enc(f.name)}`;
     photos.append(el("figure", { class: "card" },
@@ -420,7 +482,7 @@ async function loadGallery() {
   }
   const videos = $("#videos");
   videos.replaceChildren();
-  if (!v.videos.length) videos.append(el("p", { class: "muted" }, "Nog geen video's."));
+  if (!v.videos.length) videos.append(el("p", { class: "muted" }, "No videos yet."));
   for (const f of v.videos) {
     const url = `/media/videos/${enc(f.name)}`;
     videos.append(el("div", { class: "card row" },
@@ -438,13 +500,13 @@ function stackCard(s) {
   const base = `/media/stacks/${enc(s.name)}/`;
   const thumbOf = (f) => `/thumb/stacks/${enc(s.name)}/${enc(f)}`;
   const cover = s.outputs.result || s.frames[Math.floor(s.frames.length / 2)];
-  const jobInfo = s.job ? el("span", { class: "badge " + ({ done: "ok", error: "warn" })[s.job.status] }, `verwerking: ${s.job.status}`) : null;
+  const jobInfo = s.job ? el("span", { class: "badge " + ({ done: "ok", error: "warn" })[s.job.status] }, `processing: ${s.job.status}`) : null;
   const frames = el("div", { class: "frames", hidden: true },
     s.frames.map((f) => el("figure", {},
       el("img", { src: thumbOf(f), loading: "lazy", alt: f, onclick: () => openViewer(f, base + enc(f)) }),
       el("figcaption", { class: "small" }, f.replace(s.name + "_", "#"),
-        s.open ? null : el("button", { class: "tiny danger", title: "Frame verwijderen", onclick: () => guarded(async () => {
-          if (!confirm(`Frame ${f} verwijderen?`)) return;
+        s.open ? null : el("button", { class: "tiny danger", title: "Delete frame", onclick: () => guarded(async () => {
+          if (!confirm(`Delete frame ${f}?`)) return;
           await api(`/api/stacks/${enc(s.name)}/${enc(f)}`, "DELETE");
           loadStacks();
         }) }, "✕")))));
@@ -455,21 +517,21 @@ function stackCard(s) {
         el("strong", {}, s.name),
         el("div", { class: "muted small" }, `${s.frames.length} frames · ${s.created ? s.created.replace("T", " ") : ""}`),
         el("div", { class: "row" },
-          s.outputs.result ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(s.outputs.result, base + enc(s.outputs.result)); } }, "resultaat") : el("span", { class: "muted small" }, "niet verwerkt"),
-          s.outputs.depthmap ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(s.outputs.depthmap, base + enc(s.outputs.depthmap)); } }, "dieptekaart") : null,
+          s.outputs.result ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(s.outputs.result, base + enc(s.outputs.result)); } }, "result") : el("span", { class: "muted small" }, "not processed"),
+          s.outputs.depthmap ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(s.outputs.depthmap, base + enc(s.outputs.depthmap)); } }, "depth map") : null,
           jobInfo, s.open ? el("span", { class: "badge" }, "open") : null))),
     el("div", { class: "row" },
       processButton(s),
       s.outputs.result && s.frames.length && !s.open ? el("button", { onclick: () => guarded(async () => {
-        if (!confirm(`De ${s.frames.length} bronframes van ${s.name} verwijderen? Het resultaat blijft bewaard.`)) return;
+        if (!confirm(`Delete the ${s.frames.length} source frames of ${s.name}? The result is kept.`)) return;
         await api(`/api/stacks/${enc(s.name)}/frames`, "DELETE");
         loadStacks();
-      }, "#stacks-msg") }, "Bronframes verwijderen") : null,
+      }, "#stacks-msg") }, "Delete source frames") : null,
       s.frames.length ? el("button", { onclick: () => { frames.hidden = !frames.hidden; } }, "Frames") : null,
       el("a", { class: "button", href: `/download/stack/${enc(s.name)}.zip` }, "Download zip"),
-      s.outputs.result ? el("a", { class: "button", href: base + enc(s.outputs.result) + "?download=1" }, "Download resultaat") : null,
+      s.outputs.result ? el("a", { class: "button", href: base + enc(s.outputs.result) + "?download=1" }, "Download result") : null,
       s.open ? null : uploadButtons("stack", s.name),
-      s.open ? null : deleteButton(`/api/stacks/${enc(s.name)}`, `Stack ${s.name} (alle frames)`, loadStacks)),
+      s.open ? null : deleteButton(`/api/stacks/${enc(s.name)}`, `stack ${s.name} (all frames)`, loadStacks)),
     frames);
 }
 
@@ -484,10 +546,10 @@ function processButton(s) {
   const retry = info.has_autofocus || s.outputs.result;
   return el("button", { class: "primary", onclick: () => guarded(async () => {
     const r = await api(`/api/stack/process/${enc(s.name)}`, "POST", { options: processOptions() });
-    say(`Verwerking ${s.name} gestart`);
+    say(`Processing ${s.name} started`);
     watchJob(r.job);
     loadStacks();
-  }, "#stacks-msg") }, retry ? "Opnieuw verwerken" : "Process stack");
+  }, "#stacks-msg") }, retry ? "Reprocess" : "Process stack");
 }
 
 // Per-run overrides for focus-stack; defaults come from the settings.
@@ -500,7 +562,7 @@ function processOptions() {
 }
 function processOptionsBox() {
   const fs = settings.focus_stack || {};
-  const box = el("details", { id: "process-options", class: "card" }, el("summary", {}, "focus-stack opties voor deze run"));
+  const box = el("details", { id: "process-options", class: "card" }, el("summary", {}, "focus-stack options for this run"));
   for (const [key, meta] of Object.entries(FOCUS_STACK_FIELDS)) box.append(fieldFor(key, meta, fs[key]));
   return box;
 }
@@ -516,36 +578,37 @@ async function loadStacks() {
     if (i.type === "checkbox") i.checked = keep[i.dataset.key]; else i.value = keep[i.dataset.key];
   });
   $("#process-options").open = !!openDetails;
-  if (!info.focus_stack?.available) box.append(el("p", { class: "error" }, "focus-stack binary niet gevonden — voer ./install.sh uit op de Pi."));
-  if (!r.stacks.length) box.append(el("p", { class: "muted" }, "Nog geen stacks."));
+  if (!info.focus_stack?.available) box.append(el("p", { class: "error" }, "focus-stack binary not found — run ./install.sh on the Pi."));
+  if (!r.stacks.length) box.append(el("p", { class: "muted" }, "No stacks yet."));
   r.stacks.forEach((s) => box.append(stackCard(s)));
 }
 $("#btn-stacks-refresh").addEventListener("click", loadStacks);
+$("#btn-jobs-refresh").addEventListener("click", loadJobs);
 
 // ---------------------------------------------------------------- settings
 const FOCUS_STACK_FIELDS = {
-  output_format: { label: "Uitvoerformaat", options: ["png", "jpg", "tif"] },
+  output_format: { label: "Output format", options: ["png", "jpg", "tif"] },
   consistency: { label: "Consistency (0-2)", type: "number" },
   denoise: { label: "Denoise", type: "number", step: "0.1" },
   threads: { label: "Threads", type: "number" },
-  batchsize: { label: "Batchsize (0 = alle frames in één batch; Pi 3B: 4 i.v.m. RAM)", type: "number" },
-  delete_frames: { label: "Bronframes verwijderen na geslaagde stack", type: "checkbox" },
-  jpgquality: { label: "JPG-kwaliteit", type: "number" },
-  reference: { label: "Referentieframe (index, leeg = midden)", type: "number" },
-  remove_bg: { label: "Remove bg (+ zwart / − wit, leeg = uit)", type: "number" },
+  batchsize: { label: "Batch size (0 = all frames in one batch; Pi 3B: keep 4 because of RAM)", type: "number" },
+  delete_frames: { label: "Delete source frames after a successful stack", type: "checkbox" },
+  jpgquality: { label: "JPG quality", type: "number" },
+  reference: { label: "Reference frame (index, empty = middle)", type: "number" },
+  remove_bg: { label: "Remove background (+ black / − white, empty = off)", type: "number" },
   global_align: { label: "Global align", type: "checkbox" },
   full_resolution_align: { label: "Full-resolution align", type: "checkbox" },
-  no_whitebalance: { label: "Geen witbalanscorrectie", type: "checkbox" },
-  no_contrast: { label: "Geen contrastcorrectie", type: "checkbox" },
-  no_transform: { label: "Geen positie-uitlijning", type: "checkbox" },
-  no_align: { label: "Uitlijning volledig overslaan", type: "checkbox" },
-  align_keep_size: { label: "Originele grootte behouden", type: "checkbox" },
-  nocrop: { label: "Niet bijsnijden", type: "checkbox" },
-  no_opencl: { label: "Geen OpenCL (Pi: aan)", type: "checkbox" },
-  depthmap: { label: "Dieptekaart opslaan", type: "checkbox" },
-  view3d: { label: "3D-preview opslaan", type: "checkbox" },
+  no_whitebalance: { label: "No white balance correction", type: "checkbox" },
+  no_contrast: { label: "No contrast correction", type: "checkbox" },
+  no_transform: { label: "No position alignment", type: "checkbox" },
+  no_align: { label: "Skip alignment completely", type: "checkbox" },
+  align_keep_size: { label: "Keep original size", type: "checkbox" },
+  nocrop: { label: "Do not crop", type: "checkbox" },
+  no_opencl: { label: "No OpenCL (Pi: on)", type: "checkbox" },
+  depthmap: { label: "Save depth map", type: "checkbox" },
+  view3d: { label: "Save 3D preview", type: "checkbox" },
   verbose: { label: "Verbose log", type: "checkbox" },
-  extra_args: { label: "Extra argumenten", type: "text" },
+  extra_args: { label: "Extra arguments", type: "text" },
 };
 
 function fieldFor(key, meta, value) {
@@ -561,30 +624,30 @@ function fieldFor(key, meta, value) {
 }
 
 const SETTINGS_SECTIONS = [
-  ["Bestanden", null, {
-    filename_pattern: { label: "Bestandsnaam-patroon ({dt:%Y%m%d_%H%M%S}, {label}, {seq:03d})", type: "text" },
-    next_seq: { label: "Volgende {seq}", type: "number" },
-    image_format: { label: "Beeldformaat", options: ["png", "tif", "jpg"] },
-    png_compress_level: { label: "PNG-compressie (0-9, lossless; lager = sneller)", type: "number" },
-    jpeg_quality: { label: "JPG-kwaliteit", type: "number" },
-    save_metadata: { label: "Metadata-sidecar (.json) bewaren", type: "checkbox" },
-    persist_controls: { label: "Camera-controls onthouden na herstart", type: "checkbox" },
+  ["Files", null, {
+    filename_pattern: { label: "File name pattern ({dt:%Y%m%d_%H%M%S}, {label}, {seq:03d})", type: "text" },
+    next_seq: { label: "Next {seq}", type: "number" },
+    image_format: { label: "Image format", options: ["png", "tif", "jpg"] },
+    png_compress_level: { label: "PNG compression (0-9, lossless; lower = faster)", type: "number" },
+    jpeg_quality: { label: "JPG quality", type: "number" },
+    save_metadata: { label: "Save metadata sidecar (.json)", type: "checkbox" },
+    persist_controls: { label: "Remember camera controls after restart (when no boot preset is set)", type: "checkbox" },
   }],
   ["Upload", "upload", {
-    auto_drive: { label: "Automatisch uploaden naar Google Drive (als de rclone-remote bestaat)", type: "checkbox" },
-    rclone_remote: { label: "rclone-remote (bv. gdrive:MiniCamera)", type: "text" },
-    auto_nas: { label: "Automatisch kopiëren naar NAS", type: "checkbox" },
-    nas_path: { label: "NAS-pad (gemount)", type: "text" },
-    nas_require_mount: { label: "Weigeren als het NAS-pad niet gemount is", type: "checkbox" },
-    stack_frames: { label: "Bij stacks ook alle frames uploaden (anders enkel resultaat)", type: "checkbox" },
+    auto_drive: { label: "Upload to Google Drive automatically (when connected)", type: "checkbox" },
+    rclone_remote: { label: "Drive folder (rclone remote:path, e.g. gdrive:MiniCamera)", type: "text" },
+    auto_nas: { label: "Copy to NAS automatically", type: "checkbox" },
+    nas_path: { label: "NAS folder (on the mounted share)", type: "text" },
+    nas_require_mount: { label: "Refuse when the NAS folder is not on a mounted share", type: "checkbox" },
+    stack_frames: { label: "Also upload all stack frames (otherwise only the result)", type: "checkbox" },
   }],
-  ["Lens-sweep (AF-camera's)", "sweep", {
+  ["Lens sweep (AF cameras)", "sweep", {
     start: { label: "Start LensPosition", type: "number", step: "0.05" },
-    end: { label: "Einde LensPosition", type: "number", step: "0.05" },
-    steps: { label: "Stappen", type: "number" },
-    settle_ms: { label: "Wachttijd per stap (ms)", type: "number" },
+    end: { label: "End LensPosition", type: "number", step: "0.05" },
+    steps: { label: "Steps", type: "number" },
+    settle_ms: { label: "Settle time per step (ms)", type: "number" },
   }],
-  ["focus-stack standaardopties", "focus_stack", FOCUS_STACK_FIELDS],
+  ["focus-stack default options", "focus_stack", FOCUS_STACK_FIELDS],
 ];
 
 async function loadSettings() {
@@ -598,7 +661,7 @@ async function loadSettings() {
     for (const [key, meta] of Object.entries(fields)) fs.append(fieldFor(key, meta, values[key]));
     form.append(fs);
   }
-  form.append(el("p", { class: "muted small" }, `Voorbeeld: ${r.example_name}. Preview-/videoresolutie staan in config.json (herstart nodig).`));
+  form.append(el("p", { class: "muted small" }, `Example: ${r.example_name}. Preview/video resolution live in config.json (restart needed).`));
   const sw = settings.sweep;
   if (sw && !$("#sweep-start").value) {
     $("#sweep-start").value = sw.start; $("#sweep-end").value = sw.end;
@@ -619,30 +682,110 @@ $("#btn-settings-save").addEventListener("click", (e) => { e.preventDefault(); g
     });
   });
   await api("/api/settings", "POST", body);
-  say("Opgeslagen", false, "#settings-message");
+  say("Saved", false, "#settings-message");
   await loadSettings();
   info = await api("/api/camera_info");
   renderBadges();
 }, "#settings-message"); });
+
+// ---------------------------------------------------------------- connections: Google Drive
+async function loadDrive() {
+  const r = await api("/api/drive/status");
+  $("#drive-status").textContent = !r.rclone ? "rclone is not installed."
+    : r.connected ? `Connected — files go to ${r.remote}` : "Not connected.";
+  $("#drive-status").className = r.connected ? "ok-text" : "muted";
+  $("#btn-drive-connect").textContent = r.connected ? "Reconnect Google Drive" : "Connect Google Drive";
+  $("#btn-drive-connect").disabled = !r.rclone;
+  $("#btn-drive-disconnect").hidden = !r.connected;
+}
+$("#btn-drive-connect").addEventListener("click", () => guarded(async () => {
+  say("Starting authorization…", false, "#drive-message");
+  const r = await api("/api/drive/connect/start", "POST", {});
+  $("#drive-auth-link").href = r.url;
+  $("#drive-flow").hidden = false;
+  $("#drive-redirect").value = "";
+  window.open(r.url, "_blank", "noopener");
+  say("Sign in with Google in the new tab, then paste the address you end up on.", false, "#drive-message");
+}, "#drive-message"));
+$("#btn-drive-finish").addEventListener("click", () => guarded(async () => {
+  say("Finishing…", false, "#drive-message");
+  const r = await api("/api/drive/connect/finish", "POST", { url: $("#drive-redirect").value });
+  $("#drive-flow").hidden = true;
+  say(`Google Drive connected (${r.remote}).`, false, "#drive-message");
+  info = await api("/api/camera_info");
+  loadDrive();
+  renderBadges();
+}, "#drive-message"));
+$("#btn-drive-disconnect").addEventListener("click", () => guarded(async () => {
+  if (!confirm("Disconnect Google Drive? Files already uploaded stay on Drive.")) return;
+  await api("/api/drive/disconnect", "POST", {});
+  say("Disconnected.", false, "#drive-message");
+  info = await api("/api/camera_info");
+  loadDrive();
+  renderBadges();
+}, "#drive-message"));
+
+// ---------------------------------------------------------------- connections: NAS
+function updateNasForm() {
+  const smb = $("#nas-type").value === "smb";
+  document.querySelectorAll("#nas-form .smb-only").forEach((n) => { n.hidden = !smb; });
+  $("#nas-share").placeholder = smb ? "photos" : "/volume1/photos";
+}
+$("#nas-type").addEventListener("change", updateNasForm);
+async function loadNas() {
+  const r = await api("/api/nas/status");
+  if (r.configured) {
+    const src = r.type === "smb" ? `//${r.server}/${r.share}` : `${r.server}:/${r.share}`;
+    $("#nas-status").textContent = `${r.mounted ? "Mounted" : "Configured (not mounted)"}: ${src} → ${r.mount_point}. Files go to ${r.nas_path}`;
+    $("#nas-type").value = r.type; $("#nas-server").value = r.server; $("#nas-share").value = r.share;
+    $("#nas-mount-point").value = r.mount_point; $("#nas-username").value = r.username || "";
+    $("#nas-domain").value = r.domain || ""; $("#nas-version").value = r.version || "";
+  } else {
+    $("#nas-status").textContent = r.error ? `Not available: ${r.error}` : "No NAS mounted.";
+  }
+  $("#btn-nas-unmount").hidden = !r.configured;
+  $("#btn-nas-mount").textContent = r.configured ? "Save & remount" : "Mount NAS";
+  updateNasForm();
+}
+$("#btn-nas-mount").addEventListener("click", () => guarded(async () => {
+  say("Mounting…", false, "#nas-message");
+  const r = await api("/api/nas/mount", "POST", {
+    type: $("#nas-type").value, server: $("#nas-server").value.trim(), share: $("#nas-share").value.trim(),
+    mount_point: $("#nas-mount-point").value.trim(), username: $("#nas-username").value,
+    password: $("#nas-password").value, domain: $("#nas-domain").value, version: $("#nas-version").value,
+  });
+  $("#nas-password").value = "";
+  say(`Mounted. Files go to ${r.nas_path}`, false, "#nas-message");
+  info = await api("/api/camera_info");
+  loadNas();
+  loadSettings();
+}, "#nas-message"));
+$("#btn-nas-unmount").addEventListener("click", () => guarded(async () => {
+  if (!confirm("Unmount the NAS and remove it from /etc/fstab? Files on the NAS are not touched.")) return;
+  await api("/api/nas/unmount", "POST", {});
+  say("Unmounted.", false, "#nas-message");
+  info = await api("/api/camera_info");
+  loadNas();
+}, "#nas-message"));
 
 // ---------------------------------------------------------------- updates
 async function loadVersion() {
   try { $("#version").textContent = (await api("/api/version")).version; } catch (_) { /* ignore */ }
 }
 $("#btn-update-check").addEventListener("click", () => guarded(async () => {
-  $("#update-info").textContent = "Controleren…";
+  $("#update-info").textContent = "Checking…";
   const r = await api("/api/update/check", "POST", {});
   $("#btn-update-apply").hidden = r.behind === 0;
   $("#update-info").replaceChildren(r.behind === 0
-    ? "Je hebt de nieuwste versie."
-    : el("div", {}, `${r.behind} nieuwe wijziging(en):`, el("pre", { class: "log" }, r.changes.join("\n"))));
+    ? "You are running the latest version."
+    : el("div", {}, `${r.behind} new change(s):`, el("pre", { class: "log" }, r.changes.join("\n"))));
 }, "#update-info"));
 $("#btn-update-apply").addEventListener("click", () => guarded(async () => {
-  if (!confirm("Update installeren? De app herstart daarna automatisch.")) return;
+  if (!confirm("Install the update? The app restarts automatically afterwards.")) return;
   const r = await api("/api/update/apply", "POST", {});
   $("#btn-update-apply").disabled = true;
   const log = el("pre", { class: "log" });
-  $("#update-info").replaceChildren("Bezig met updaten…", log);
+  $("#update-info").replaceChildren("Updating…", log);
   const tick = async () => {
     let job;
     try { job = await api(`/api/jobs/${r.job}`); } catch (_) { return setTimeout(waitForRestart, 2000); }

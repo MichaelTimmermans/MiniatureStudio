@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="nl">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -20,59 +20,59 @@
       <div id="focus-marker" hidden></div>
     </div>
     <div class="row small">
-      <label><input type="checkbox" id="toggle-grid"> Raster</label>
-      <label><input type="checkbox" id="toggle-focus"> Focuscontrole (100% crop)</label>
-      <span class="muted">Klik in de preview om het focuspunt te kiezen</span>
+      <label><input type="checkbox" id="toggle-grid"> Grid</label>
+      <label><input type="checkbox" id="toggle-focus"> Focus check (100% crop)</label>
+      <span class="muted">Click the preview to choose the focus point</span>
     </div>
     <div id="focus-check" hidden>
       <img id="focus-crop" alt="Focus crop">
-      <div>Scherpte: <strong id="sharpness">–</strong> <span class="muted">(hoger = scherper, max <span id="sharpness-max">–</span>)</span></div>
+      <div>Sharpness: <strong id="sharpness">–</strong> <span class="muted">(higher = sharper, best so far <span id="sharpness-max">–</span>)</span></div>
     </div>
   </section>
 
   <section id="side">
     <nav id="tabs">
-      <button data-tab="capture" class="active">Opname</button>
+      <button data-tab="capture" class="active">Capture</button>
       <button data-tab="controls">Camera</button>
       <button data-tab="stacks">Stacks</button>
-      <button data-tab="gallery">Galerij</button>
+      <button data-tab="gallery">Gallery</button>
       <button data-tab="jobs">Jobs</button>
-      <button data-tab="settings">Instellingen</button>
+      <button data-tab="settings">Settings</button>
     </nav>
 
     <!-- Capture -->
     <div class="tab" id="tab-capture">
-      <label class="block">Label <input id="label" placeholder="bv. space_marine_sergeant"></label>
-      <div class="muted small">Naam-voorbeeld: <code id="name-example"></code></div>
+      <label class="block">Label <input id="label" placeholder="e.g. space_marine_sergeant"></label>
+      <div class="muted small">File name example: <code id="name-example"></code></div>
 
-      <h3>Foto</h3>
-      <button id="btn-photo" class="primary">📷 Foto <kbd>P</kbd></button>
+      <h3>Photo</h3>
+      <button id="btn-photo" class="primary">📷 Photo <kbd>P</kbd></button>
 
-      <h3>Focus stack — manueel</h3>
+      <h3>Focus stack — manual</h3>
       <div class="row">
         <button id="btn-stack-start">Start stack</button>
-        <button id="btn-stack-frame" disabled>+ Frame <kbd>Spatie</kbd></button>
-        <button id="btn-stack-end" disabled>Einde</button>
+        <button id="btn-stack-frame" disabled>+ Frame <kbd>Space</kbd></button>
+        <button id="btn-stack-end" disabled>Finish</button>
       </div>
-      <label class="small" id="stack-autoprocess-label"><input type="checkbox" id="stack-autoprocess" checked> Na einde meteen verwerken</label>
+      <label class="small" id="stack-autoprocess-label"><input type="checkbox" id="stack-autoprocess" checked> Process right after finishing</label>
 
       <div id="sweep-box" hidden>
-        <h3>Focus stack — automatische lens-sweep</h3>
+        <h3>Focus stack — automatic lens sweep</h3>
         <div class="grid2">
           <label>Start LensPosition <input type="number" step="0.05" id="sweep-start"></label>
-          <label>Einde LensPosition <input type="number" step="0.05" id="sweep-end"></label>
-          <label>Stappen <input type="number" min="2" max="200" id="sweep-steps"></label>
-          <label>Wachttijd (ms) <input type="number" min="0" step="50" id="sweep-settle"></label>
+          <label>End LensPosition <input type="number" step="0.05" id="sweep-end"></label>
+          <label>Steps <input type="number" min="2" max="200" id="sweep-steps"></label>
+          <label>Settle time (ms) <input type="number" min="0" step="50" id="sweep-settle"></label>
         </div>
         <div class="row">
-          <button id="btn-sweep-from">Huidige → start</button>
-          <button id="btn-sweep-to">Huidige → einde</button>
+          <button id="btn-sweep-from">Current → start</button>
+          <button id="btn-sweep-to">Current → end</button>
         </div>
-        <div class="muted small">De frames worden na de sweep automatisch gestackt.</div>
-        <div class="muted small">LensPosition in dioptrie: 0 = oneindig, hoger = dichterbij. Huidig: <span id="lens-now">–</span></div>
+        <div class="muted small">LensPosition in dioptres: 0 = infinity, higher = closer. Current: <span id="lens-now">–</span>.
+          Frames are stacked automatically after the sweep.</div>
         <div class="row">
           <button id="btn-sweep" class="primary">▶ Start sweep</button>
-          <button id="btn-sweep-cancel" hidden>Annuleren</button>
+          <button id="btn-sweep-cancel" hidden>Cancel</button>
         </div>
       </div>
 
@@ -86,16 +86,31 @@
       <div id="message" class="status"></div>
     </div>
 
-    <!-- Controls -->
+    <!-- Camera -->
     <div class="tab" id="tab-controls" hidden>
-      <div class="row">
-        <label>Camera <select id="camera-select"></select></label>
-        <span class="muted small">Automatisch gedetecteerd bij opstart — nieuwe camera aansluiten met de Pi uit.</span>
-      </div>
+      <fieldset>
+        <legend>Camera</legend>
+        <div class="row">
+          <select id="camera-select"></select>
+          <button id="btn-camera-default">Set as default</button>
+        </div>
+        <div class="muted small">Cameras are detected at startup. Connect a new camera with the Pi switched off.</div>
+      </fieldset>
+      <fieldset>
+        <legend>Presets for <span id="preset-model"></span></legend>
+        <div class="row">
+          <select id="preset-select"></select>
+          <button id="btn-preset-load">Load</button>
+          <button id="btn-preset-save">Save as…</button>
+          <button id="btn-preset-default">Load at boot</button>
+          <button id="btn-preset-delete" class="danger">Delete</button>
+        </div>
+        <div class="muted small" id="preset-info"></div>
+      </fieldset>
       <div class="row">
         <input id="control-filter" placeholder="Filter controls…">
         <button id="btn-af" hidden>Autofocus</button>
-        <button id="btn-controls-reset">Alles resetten</button>
+        <button id="btn-controls-reset">Reset all</button>
       </div>
       <div id="live" class="small"></div>
       <div id="controls"></div>
@@ -103,39 +118,86 @@
 
     <!-- Stacks -->
     <div class="tab" id="tab-stacks" hidden>
-      <div class="row"><button id="btn-stacks-refresh">Vernieuwen</button></div>
+      <div class="row"><button id="btn-stacks-refresh">Refresh</button></div>
       <div id="stacks"></div>
     </div>
 
     <!-- Gallery -->
     <div class="tab" id="tab-gallery" hidden>
-      <div class="row">
-        <button id="btn-gallery-refresh">Vernieuwen</button>
-      </div>
-      <h3>Foto's</h3>
+      <div class="row"><button id="btn-gallery-refresh">Refresh</button></div>
+      <h3>Photos</h3>
       <div id="photos" class="gallery"></div>
-      <h3>Video's</h3>
+      <h3>Videos</h3>
       <div id="videos"></div>
     </div>
 
     <!-- Jobs -->
     <div class="tab" id="tab-jobs" hidden>
+      <p class="muted small">Jobs are tasks that run in the background so you can keep shooting:
+        focus-stack processing, uploads, lens sweeps and updates. Each job shows its status and log.</p>
+      <div class="row"><button id="btn-jobs-refresh">Refresh</button></div>
       <div id="jobs"></div>
     </div>
 
     <!-- Settings -->
     <div class="tab" id="tab-settings" hidden>
       <fieldset>
-        <legend>Versie &amp; updates</legend>
+        <legend>Google Drive</legend>
+        <div class="row"><span id="drive-status">–</span></div>
         <div class="row">
-          <span>Versie: <code id="version">–</code></span>
-          <button id="btn-update-check">Controleer op updates</button>
-          <button id="btn-update-apply" class="primary" hidden>Update installeren</button>
+          <button id="btn-drive-connect" class="primary">Connect Google Drive</button>
+          <button id="btn-drive-disconnect" class="danger" hidden>Disconnect</button>
+        </div>
+        <div id="drive-flow" hidden>
+          <ol class="small">
+            <li><a id="drive-auth-link" target="_blank" rel="noopener">Open the Google sign-in page</a> and allow access.</li>
+            <li>Google then redirects to an address starting with <code>http://127.0.0.1:53682/</code>.
+              If the Pi is not the computer you are browsing on, that page will fail to load — that is expected.</li>
+            <li>Copy the <strong>complete address</strong> from the address bar and paste it here:</li>
+          </ol>
+          <div class="row">
+            <input id="drive-redirect" placeholder="http://127.0.0.1:53682/?state=…&code=…" class="wide">
+            <button id="btn-drive-finish" class="primary">Finish</button>
+          </div>
+        </div>
+        <div id="drive-message" class="status small"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>NAS</legend>
+        <div class="row"><span id="nas-status">–</span></div>
+        <div class="grid2" id="nas-form">
+          <label>Type <select id="nas-type"><option value="smb">SMB / Windows share</option><option value="nfs">NFS</option></select></label>
+          <label>Server (name or IP) <input id="nas-server" placeholder="nas.local"></label>
+          <label>Share / export path <input id="nas-share" placeholder="photos"></label>
+          <label>Mount point <input id="nas-mount-point" value="/mnt/nas"></label>
+          <label class="smb-only">Username <input id="nas-username" autocomplete="off"></label>
+          <label class="smb-only">Password <input id="nas-password" type="password" autocomplete="new-password"></label>
+          <label class="smb-only">Domain (optional) <input id="nas-domain"></label>
+          <label class="smb-only">SMB version (optional) <select id="nas-version">
+            <option value="">auto</option><option>3.1.1</option><option>3.0</option><option>2.1</option><option>2.0</option><option>1.0</option></select></label>
+        </div>
+        <div class="row">
+          <button id="btn-nas-mount" class="primary">Mount NAS</button>
+          <button id="btn-nas-unmount" class="danger" hidden>Unmount</button>
+        </div>
+        <div class="muted small">The share is added to /etc/fstab and mounted again at every boot.
+          Files go to &lt;mount point&gt;/MiniCamera.</div>
+        <div id="nas-message" class="status small"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Version &amp; updates</legend>
+        <div class="row">
+          <span>Version: <code id="version">–</code></span>
+          <button id="btn-update-check">Check for updates</button>
+          <button id="btn-update-apply" class="primary" hidden>Install update</button>
         </div>
         <div id="update-info" class="small"></div>
       </fieldset>
+
       <form id="settings-form"></form>
-      <div class="row"><button id="btn-settings-save" class="primary">Opslaan</button></div>
+      <div class="row"><button id="btn-settings-save" class="primary">Save settings</button></div>
       <div id="settings-message" class="status"></div>
     </div>
   </section>
@@ -146,7 +208,7 @@
     <span id="viewer-title"></span>
     <span>
       <a id="viewer-download" download>Download</a>
-      <button id="viewer-close">Sluiten</button>
+      <button id="viewer-close">Close</button>
     </span>
   </div>
   <div id="viewer-body"></div>

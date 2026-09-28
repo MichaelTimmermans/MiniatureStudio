@@ -523,23 +523,35 @@ def open_camera(index=None, stream=None):
     return RealCamera(index, stream=stream)
 
 
-def restore_controls(cam):
-    """Re-apply the controls saved for this camera model."""
-    saved = (CONFIG.get("controls") or {}).get(cam.model) or {}
-    if not saved or not CONFIG.get("persist_controls", True):
-        return
-    restored = {}
-    for name, value in saved.items():
+def apply_control_values(cam, values, reset_first=False):
+    """Coerce and apply a {control: value} dict; unknown controls are skipped."""
+    coerced = {}
+    for name, value in (values or {}).items():
         if name in cam.camera_controls and name not in HIDDEN_CONTROLS:
             try:
-                restored[name] = coerce_control(name, value, cam.camera_controls[name])
+                coerced[name] = coerce_control(name, value, cam.camera_controls[name])
             except (TypeError, ValueError):
                 pass
     with camera_lock:
+        if reset_first:
+            cam.reset_controls()
         try:
-            cam.set_controls(restored)
+            cam.set_controls(coerced)
         except Exception as exc:
-            log.warning("Could not restore saved controls: %s", exc)
+            log.warning("Could not apply controls: %s", exc)
+    return coerced
+
+
+def restore_controls(cam):
+    """At startup / camera switch: the model's default preset, else its last-used controls."""
+    default = CONFIG.get("default_preset", {}).get(cam.model)
+    preset = CONFIG.get("presets", {}).get(cam.model, {}).get(default) if default else None
+    if preset is not None:
+        log.info("Loading default preset %r for %s", default, cam.model)
+        apply_control_values(cam, preset)
+        return
+    if CONFIG.get("persist_controls", True):
+        apply_control_values(cam, (CONFIG.get("controls") or {}).get(cam.model))
 
 
 camera = None  # set in main()
@@ -1073,9 +1085,80 @@ def api_cameras():
                 camera = open_camera(stream=stream)
                 return jsonify(ok=False, error=str(exc)), 500
         restore_controls(camera)
-        CONFIG["camera"]["index"] = index
+    return jsonify(ok=True, cameras=list_cameras(), active=camera.index, model=camera.model,
+                   default=int(CONFIG["camera"].get("index") or 0))
+
+
+@app.route("/api/cameras/default", methods=["POST"])
+def api_cameras_default():
+    """The camera opened at boot."""
+    index = int((request.get_json(force=True) or {}).get("index", 0))
+    if index >= len(list_cameras()):
+        return jsonify(ok=False, error=f"no camera {index}"), 400
+    CONFIG["camera"]["index"] = index
+    save_config()
+    return jsonify(ok=True, default=index)
+
+
+# Presets: named sets of camera controls, stored per camera model.
+
+def model_presets():
+    return CONFIG.setdefault("presets", {}).setdefault(camera.model, {})
+
+
+@app.route("/api/presets")
+def api_presets():
+    return jsonify(ok=True, model=camera.model, presets=sorted(model_presets()),
+                   default=CONFIG.get("default_preset", {}).get(camera.model))
+
+
+@app.route("/api/presets", methods=["POST"])
+def api_preset_save():
+    name = sanitize((request.get_json(force=True) or {}).get("name", ""))
+    if not name:
+        return jsonify(ok=False, error="preset name required"), 400
+    model_presets()[name] = jsonable(camera.applied)
+    save_config()
+    return jsonify(ok=True, name=name, controls=model_presets()[name])
+
+
+@app.route("/api/presets/<name>/load", methods=["POST"])
+def api_preset_load(name):
+    preset = model_presets().get(name)
+    if preset is None:
+        abort(404)
+    # Reset first, so controls not in the preset go back to their defaults.
+    apply_control_values(camera, preset, reset_first=True)
+    if CONFIG.get("persist_controls", True):
+        CONFIG.setdefault("controls", {})[camera.model] = jsonable(camera.applied)
         save_config()
-    return jsonify(ok=True, cameras=list_cameras(), active=camera.index, model=camera.model)
+    return jsonify(ok=True, applied=jsonable(camera.applied))
+
+
+@app.route("/api/presets/<name>", methods=["DELETE"])
+def api_preset_delete(name):
+    if model_presets().pop(name, None) is None:
+        abort(404)
+    defaults = CONFIG.setdefault("default_preset", {})
+    if defaults.get(camera.model) == name:
+        defaults.pop(camera.model)
+    save_config()
+    return jsonify(ok=True)
+
+
+@app.route("/api/presets/default", methods=["POST"])
+def api_preset_default():
+    """Preset loaded at every boot for the current camera model; null clears it."""
+    name = (request.get_json(force=True) or {}).get("name")
+    defaults = CONFIG.setdefault("default_preset", {})
+    if name is None:
+        defaults.pop(camera.model, None)
+    elif name not in model_presets():
+        return jsonify(ok=False, error=f"unknown preset {name!r}"), 404
+    else:
+        defaults[camera.model] = name
+    save_config()
+    return jsonify(ok=True, default=defaults.get(camera.model))
 
 
 @app.route("/api/status")
@@ -1497,6 +1580,211 @@ def api_preview_name():
         return jsonify(ok=True, name=name)
     except Exception as exc:
         return jsonify(ok=False, error=repr(exc))
+
+
+# --------------------------------------------------------------------------
+# Routes — connect Google Drive (rclone OAuth, headless-friendly)
+# --------------------------------------------------------------------------
+#
+# `rclone authorize drive` runs its OAuth callback server on the Pi at
+# 127.0.0.1:53682. The user's browser is usually on another machine, so after
+# Google consent it lands on an unreachable 127.0.0.1 URL; the user pastes that
+# URL back into the UI and we replay it against rclone locally.
+
+RCLONE_AUTH_PORT = 53682
+drive_auth = {"proc": None, "output": [], "google_url": None}
+
+
+def drive_remote_name():
+    return (CONFIG["upload"].get("rclone_remote") or "gdrive:MiniCamera").split(":")[0] or "gdrive"
+
+
+def parse_rclone_token(output):
+    """Token JSON from `rclone authorize` output (between '--->' and '<---End paste')."""
+    import base64
+
+    m = re.search(r"--->\s*(.+?)\s*<---End paste", output, re.DOTALL)
+    blob = m.group(1).strip() if m else ""
+    if not blob.startswith("{"):
+        try:  # some rclone versions print a base64 config blob instead
+            decoded = json.loads(base64.b64decode(blob + "=" * (-len(blob) % 4)))
+            blob = decoded.get("token", "") if isinstance(decoded, dict) else ""
+        except Exception:
+            m = re.search(r"(\{\s*\"access_token\".*?\})\s*$", output, re.MULTILINE)
+            blob = m.group(1) if m else ""
+    return blob if "access_token" in blob else None
+
+
+def _stop_drive_auth():
+    proc = drive_auth.get("proc")
+    if proc and proc.poll() is None:
+        proc.terminate()
+    drive_auth.update(proc=None, output=[], google_url=None)
+
+
+@app.route("/api/drive/status")
+def api_drive_status():
+    _drive_check["at"] = 0  # force a fresh check
+    return jsonify(ok=True, rclone=bool(shutil.which("rclone")), connected=drive_available(),
+                   remote=CONFIG["upload"].get("rclone_remote"),
+                   pending=bool(drive_auth.get("proc") and drive_auth["proc"].poll() is None))
+
+
+@app.route("/api/drive/connect/start", methods=["POST"])
+def api_drive_connect_start():
+    import http.client
+
+    rclone = shutil.which("rclone")
+    if not rclone:
+        return jsonify(ok=False, error="rclone is not installed (sudo apt install rclone)"), 400
+    _stop_drive_auth()
+    proc = subprocess.Popen([rclone, "authorize", "drive", "--auth-no-open-browser"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    drive_auth["proc"] = proc
+
+    def reader():
+        for line in proc.stdout:
+            drive_auth["output"].append(line.rstrip())
+
+    threading.Thread(target=reader, daemon=True).start()
+    local_url = None
+    deadline = time.time() + 20
+    while time.time() < deadline and not local_url:
+        for line in drive_auth["output"]:
+            m = re.search(rf"http://127\.0\.0\.1:{RCLONE_AUTH_PORT}/auth\?state=[\w-]+", line)
+            if m:
+                local_url = m.group(0)
+        if proc.poll() is not None:
+            break
+        time.sleep(0.2)
+    if not local_url:
+        _stop_drive_auth()
+        return jsonify(ok=False, error="rclone did not start the authorization: "
+                       + " / ".join(drive_auth["output"][-5:])), 500
+    # rclone's /auth endpoint only redirects to Google; fetch that redirect here.
+    conn = http.client.HTTPConnection("127.0.0.1", RCLONE_AUTH_PORT, timeout=10)
+    conn.request("GET", local_url.split(str(RCLONE_AUTH_PORT), 1)[1])
+    resp = conn.getresponse()
+    google_url = resp.getheader("Location")
+    conn.close()
+    if not google_url:
+        _stop_drive_auth()
+        return jsonify(ok=False, error="could not get the Google sign-in URL from rclone"), 500
+    drive_auth["google_url"] = google_url
+    return jsonify(ok=True, url=google_url)
+
+
+@app.route("/api/drive/connect/finish", methods=["POST"])
+def api_drive_connect_finish():
+    from urllib.parse import urlparse
+    import http.client
+
+    proc = drive_auth.get("proc")
+    if not proc or proc.poll() is not None:
+        return jsonify(ok=False, error="no authorization in progress — start again"), 409
+    pasted = ((request.get_json(force=True) or {}).get("url") or "").strip()
+    query = urlparse(pasted).query if "://" in pasted else pasted.lstrip("?")
+    if "code=" not in query or "state=" not in query:
+        return jsonify(ok=False, error="that URL has no code/state — copy the full address from the browser"), 400
+    conn = http.client.HTTPConnection("127.0.0.1", RCLONE_AUTH_PORT, timeout=15)
+    conn.request("GET", "/?" + query)
+    conn.getresponse().read()
+    conn.close()
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        _stop_drive_auth()
+        return jsonify(ok=False, error="rclone did not finish the authorization"), 500
+    output = "\n".join(drive_auth["output"])
+    token = parse_rclone_token(output)
+    if not token:
+        _stop_drive_auth()
+        return jsonify(ok=False, error="no token received: " + output[-300:]), 500
+    remote = drive_remote_name()
+    rclone = shutil.which("rclone")
+    subprocess.run([rclone, "config", "delete", remote], capture_output=True)
+    created = subprocess.run([rclone, "config", "create", remote, "drive", "scope", "drive",
+                              "token", token, "--non-interactive"], capture_output=True, text=True)
+    _stop_drive_auth()
+    if created.returncode != 0:
+        return jsonify(ok=False, error="rclone config create failed: " + created.stderr[-300:]), 500
+    target = CONFIG["upload"].get("rclone_remote") or f"{remote}:MiniCamera"
+    subprocess.run([rclone, "mkdir", target], capture_output=True, timeout=60)
+    CONFIG["upload"]["rclone_remote"] = target
+    save_config()
+    _drive_check["at"] = 0
+    return jsonify(ok=True, remote=target, connected=drive_available())
+
+
+@app.route("/api/drive/disconnect", methods=["POST"])
+def api_drive_disconnect():
+    _stop_drive_auth()
+    rclone = shutil.which("rclone")
+    if rclone:
+        subprocess.run([rclone, "config", "delete", drive_remote_name()], capture_output=True)
+    _drive_check["at"] = 0
+    return jsonify(ok=True)
+
+
+# --------------------------------------------------------------------------
+# Routes — mount a NAS share (SMB/NFS) via the root helper
+# --------------------------------------------------------------------------
+#
+# Mounting needs root. install.sh installs scripts/minicamera-mount as
+# /usr/local/sbin/minicamera-mount (root-owned) plus a sudoers rule that lets
+# the service user run only that helper. It writes an fstab entry, so the
+# share is mounted again at every boot.
+
+MOUNT_HELPER = "/usr/local/sbin/minicamera-mount"
+
+
+def run_mount_helper(action, payload=None):
+    if not Path(MOUNT_HELPER).exists():
+        raise RuntimeError("mount helper not installed — run ./install.sh again")
+    proc = subprocess.run(["sudo", "-n", MOUNT_HELPER, action], input=json.dumps(payload or {}),
+                          capture_output=True, text=True, timeout=90)
+    try:
+        result = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        result = {}
+    if proc.returncode != 0:
+        raise RuntimeError(result.get("error") or proc.stderr.strip() or f"{action} failed")
+    return result
+
+
+@app.route("/api/nas/status")
+def api_nas_status():
+    try:
+        status = run_mount_helper("status")
+    except Exception as exc:
+        status = {"configured": False, "error": str(exc)}
+    return jsonify(ok=True, available=nas_available(), nas_path=CONFIG["upload"].get("nas_path"), **status)
+
+
+@app.route("/api/nas/mount", methods=["POST"])
+def api_nas_mount():
+    body = request.get_json(force=True) or {}
+    payload = {k: body.get(k, "") for k in
+               ("type", "server", "share", "username", "password", "domain", "version", "mount_point")}
+    try:
+        result = run_mount_helper("mount", payload)
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    CONFIG["upload"]["nas_path"] = str(Path(result["mount_point"]) / "MiniCamera")
+    save_config()
+    try:
+        Path(CONFIG["upload"]["nas_path"]).mkdir(exist_ok=True)
+    except OSError as exc:
+        return jsonify(ok=False, error=f"mounted, but cannot write to the share: {exc}"), 400
+    return jsonify(ok=True, nas_path=CONFIG["upload"]["nas_path"], **result)
+
+
+@app.route("/api/nas/unmount", methods=["POST"])
+def api_nas_unmount():
+    try:
+        return jsonify(ok=True, **run_mount_helper("unmount"))
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 400
 
 
 # --------------------------------------------------------------------------

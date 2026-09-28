@@ -77,6 +77,7 @@ if ! groups "$RUN_USER" | grep -qw video; then
   say "Added $RUN_USER to the 'video' group (camera access)"
 fi
 sudo ln -sf "$INSTALL_DIR/update.sh" /usr/local/bin/minicamera-update
+"$INSTALL_DIR/scripts/install-mount-helper.sh" "$RUN_USER"
 sudo systemctl daemon-reload
 sudo systemctl enable $SERVICE
 sudo systemctl restart $SERVICE
@@ -84,7 +85,5 @@ sudo systemctl restart $SERVICE
 
 PORT=$(python3 -c "import json;print(json.load(open('$INSTALL_DIR/config.example.json'))['server']['port'])")
 say "Done! Open http://$(hostname).local:$PORT in your browser"
-say "Update later with: minicamera-update (or the Update button in Instellingen)"
-if ! rclone listremotes 2>/dev/null | grep -q .; then
-  say "Optional Google Drive: run 'rclone config' and create a remote called 'gdrive'"
-fi
+say "Connect Google Drive or a NAS under Settings in the web app"
+say "Update later with: minicamera-update (or Settings → Check for updates)"

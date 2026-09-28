@@ -38,6 +38,14 @@ if ! git diff --quiet "$OLD" HEAD -- apt-packages.txt; then
   fi
 fi
 
+if ! git diff --quiet "$OLD" HEAD -- scripts/minicamera-mount scripts/install-mount-helper.sh; then
+  if sudo -n true 2>/dev/null; then
+    scripts/install-mount-helper.sh
+  else
+    echo "WARNING: the NAS mount helper changed — run 'minicamera-update' from a terminal (needs sudo)"
+  fi
+fi
+
 if ! git diff --quiet "$OLD" HEAD -- vendor/focus-stack || [ ! -x vendor/focus-stack/build/focus-stack ]; then
   scripts/build-focus-stack.sh
 fi

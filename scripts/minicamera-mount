@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""Root helper for MiniCamera: mount a NAS share persistently (fstab).
+
+Installed by install.sh as /usr/local/sbin/minicamera-mount (root-owned) with a
+sudoers rule for the service user. Usage (JSON on stdin, JSON on stdout):
+
+    minicamera-mount mount    {"type": "smb"|"nfs", "server", "share", "username",
+                               "password", "domain", "version", "mount_point"}
+    minicamera-mount unmount
+    minicamera-mount status
+
+Only one MiniCamera share is managed; its fstab line is marked with MARKER.
+Inputs are validated strictly because this runs as root.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+FSTAB = "/etc/fstab"
+CRED_DIR = "/etc/minicamera"
+CRED_FILE = f"{CRED_DIR}/nas.cred"
+STATE_FILE = f"{CRED_DIR}/nas.json"
+MARKER = "# minicamera-nas"
+
+HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$|^\[?[0-9A-Fa-f:.]+\]?$")
+SHARE_RE = re.compile(r"^[A-Za-z0-9._ $/-]{1,200}$")
+MOUNT_RE = re.compile(r"^/mnt/[A-Za-z0-9._-]{1,64}$")
+USER_RE = re.compile(r"^[^\n\r,=]{0,128}$")
+VERSION_RE = re.compile(r"^(|1\.0|2\.0|2\.1|3\.0|3\.02|3\.1\.1|3)$")
+
+
+def out(data, code=0):
+    print(json.dumps(data))
+    sys.exit(code)
+
+
+def fail(msg):
+    out({"error": msg}, 1)
+
+
+def read_fstab():
+    with open(FSTAB, encoding="utf-8") as f:
+        return f.read().splitlines()
+
+
+def write_fstab(lines):
+    tmp = FSTAB + ".minicamera.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp, FSTAB)
+
+
+def strip_entry(lines):
+    """Drop our marker line and the fstab line right after it."""
+    result, skip = [], False
+    for line in lines:
+        if skip:
+            skip = False
+            continue
+        if line.strip() == MARKER:
+            skip = True
+            continue
+        result.append(line)
+    return result
+
+
+def load_state():
+    try:
+        with open(STATE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def is_mounted(path):
+    return os.path.ismount(path)
+
+
+def run(*cmd):
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def fstab_escape(text):
+    return text.replace("\\", "\\134").replace(" ", "\\040").replace("\t", "\\011")
+
+
+def do_unmount(state):
+    if state:
+        unit = run("systemd-escape", "--path", state["mount_point"]).stdout.strip()
+        if unit:
+            run("systemctl", "stop", f"{unit}.automount", f"{unit}.mount")
+        if is_mounted(state["mount_point"]):
+            if run("umount", state["mount_point"]).returncode != 0:
+                run("umount", "-l", state["mount_point"])
+    write_fstab(strip_entry(read_fstab()))
+    for path in (CRED_FILE, STATE_FILE):
+        if os.path.exists(path):
+            os.remove(path)
+    run("systemctl", "daemon-reload")
+
+
+def main():
+    if os.geteuid() != 0:
+        fail("must run as root")
+    action = sys.argv[1] if len(sys.argv) > 1 else ""
+    state = load_state()
+
+    if action == "status":
+        if not state:
+            out({"configured": False})
+        out({"configured": True, "mounted": is_mounted(state["mount_point"]), **state})
+
+    if action == "unmount":
+        do_unmount(state)
+        out({"configured": False, "mounted": False})
+
+    if action != "mount":
+        fail("usage: minicamera-mount mount|unmount|status")
+
+    try:
+        req = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        fail("invalid JSON")
+    kind = req.get("type", "smb")
+    server = (req.get("server") or "").strip()
+    share = (req.get("share") or "").strip().strip("/")
+    mount_point = (req.get("mount_point") or "/mnt/nas").strip().rstrip("/")
+    username = req.get("username") or ""
+    password = req.get("password") or ""
+    domain = req.get("domain") or ""
+    version = (req.get("version") or "").strip()
+
+    if kind not in ("smb", "nfs"):
+        fail("type must be smb or nfs")
+    if not HOST_RE.match(server):
+        fail("invalid server name / IP")
+    if not SHARE_RE.match(share) or ".." in share:
+        fail("invalid share name")
+    if not MOUNT_RE.match(mount_point):
+        fail("mount point must be /mnt/<name>")
+    if not USER_RE.match(username) or not USER_RE.match(domain) or "\n" in password:
+        fail("invalid username / domain / password")
+    if not VERSION_RE.match(version):
+        fail("invalid SMB version")
+
+    # The share is written as the user who ran sudo (the MiniCamera service user).
+    uid = int(os.environ.get("SUDO_UID", "1000"))
+    gid = int(os.environ.get("SUDO_GID", "1000"))
+
+    do_unmount(state)  # replace any previous MiniCamera share
+    os.makedirs(mount_point, exist_ok=True)
+    common = "nofail,_netdev,x-systemd.automount,x-systemd.mount-timeout=30"
+
+    if kind == "smb":
+        if not os.path.exists("/sbin/mount.cifs") and not os.path.exists("/usr/sbin/mount.cifs"):
+            fail("cifs-utils is not installed (sudo apt install cifs-utils)")
+        os.makedirs(CRED_DIR, mode=0o700, exist_ok=True)
+        fd = os.open(CRED_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(f"username={username}\npassword={password}\n")
+            if domain:
+                f.write(f"domain={domain}\n")
+        opts = f"credentials={CRED_FILE},uid={uid},gid={gid},iocharset=utf8,file_mode=0664,dir_mode=0775"
+        if version:
+            opts += f",vers={version}"
+        line = f"//{fstab_escape(server)}/{fstab_escape(share)} {mount_point} cifs {opts},{common} 0 0"
+    else:
+        if not os.path.exists("/sbin/mount.nfs") and not os.path.exists("/usr/sbin/mount.nfs"):
+            fail("nfs-common is not installed (sudo apt install nfs-common)")
+        line = f"{server}:/{fstab_escape(share)} {mount_point} nfs defaults,{common} 0 0"
+
+    lines = strip_entry(read_fstab())
+    write_fstab(lines + [MARKER, line])
+    run("systemctl", "daemon-reload")
+    r = run("mount", mount_point)
+    if r.returncode != 0 or not is_mounted(mount_point):
+        # x-systemd.automount: the first access triggers the real mount.
+        run("ls", mount_point)
+    if not is_mounted(mount_point) and run("findmnt", "-n", "-t", "cifs,nfs,nfs4", mount_point).returncode != 0:
+        err = (r.stderr or r.stdout).strip() or "mount failed"
+        do_unmount(None)
+        fail(f"mount failed: {err}")
+
+    new_state = {"type": kind, "server": server, "share": share, "mount_point": mount_point,
+                 "username": username, "domain": domain, "version": version}
+    os.makedirs(CRED_DIR, mode=0o700, exist_ok=True)
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(new_state, f)
+    out({"configured": True, "mounted": True, **new_state})
+
+
+if __name__ == "__main__":
+    main()
