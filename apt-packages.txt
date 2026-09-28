@@ -1,4 +1,4 @@
-# Debian / Raspberry Pi OS packages MiniCamera needs.
+# Debian / Raspberry Pi OS packages PhotoBoothCamera needs.
 # install.sh and update.sh install these; one package per line.
 python3-picamera2
 python3-flask

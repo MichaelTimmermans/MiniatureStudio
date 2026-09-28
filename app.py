@@ -489,7 +489,7 @@ def save_image(image, path):
 
 
 def demo_mode():
-    if os.environ.get("MINICAMERA_DEMO") == "1":
+    if os.environ.get("PHOTOBOOTH_DEMO") == "1":
         return True
     try:
         import picamera2  # noqa: F401
@@ -509,7 +509,7 @@ def list_cameras():
 
 def open_camera(index=None, stream=None):
     if demo_mode():
-        log.warning("Demo mode (MINICAMERA_DEMO=1 or picamera2 missing) — no real camera")
+        log.warning("Demo mode (PHOTOBOOTH_DEMO=1 or picamera2 missing) — no real camera")
         return DemoCamera(stream=stream)
     cameras = list_cameras()
     if not cameras:
@@ -1596,7 +1596,7 @@ drive_auth = {"proc": None, "output": [], "google_url": None}
 
 
 def drive_remote_name():
-    return (CONFIG["upload"].get("rclone_remote") or "gdrive:MiniCamera").split(":")[0] or "gdrive"
+    return (CONFIG["upload"].get("rclone_remote") or "gdrive:PhotoBoothCamera").split(":")[0] or "gdrive"
 
 
 def parse_rclone_token(output):
@@ -1708,7 +1708,7 @@ def api_drive_connect_finish():
     _stop_drive_auth()
     if created.returncode != 0:
         return jsonify(ok=False, error="rclone config create failed: " + created.stderr[-300:]), 500
-    target = CONFIG["upload"].get("rclone_remote") or f"{remote}:MiniCamera"
+    target = CONFIG["upload"].get("rclone_remote") or f"{remote}:PhotoBoothCamera"
     subprocess.run([rclone, "mkdir", target], capture_output=True, timeout=60)
     CONFIG["upload"]["rclone_remote"] = target
     save_config()
@@ -1730,12 +1730,12 @@ def api_drive_disconnect():
 # Routes — mount a NAS share (SMB/NFS) via the root helper
 # --------------------------------------------------------------------------
 #
-# Mounting needs root. install.sh installs scripts/minicamera-mount as
-# /usr/local/sbin/minicamera-mount (root-owned) plus a sudoers rule that lets
+# Mounting needs root. install.sh installs scripts/photoboothcamera-mount as
+# /usr/local/sbin/photoboothcamera-mount (root-owned) plus a sudoers rule that lets
 # the service user run only that helper. It writes an fstab entry, so the
 # share is mounted again at every boot.
 
-MOUNT_HELPER = "/usr/local/sbin/minicamera-mount"
+MOUNT_HELPER = "/usr/local/sbin/photoboothcamera-mount"
 
 
 def run_mount_helper(action, payload=None):
@@ -1770,7 +1770,7 @@ def api_nas_mount():
         result = run_mount_helper("mount", payload)
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)), 400
-    CONFIG["upload"]["nas_path"] = str(Path(result["mount_point"]) / "MiniCamera")
+    CONFIG["upload"]["nas_path"] = str(Path(result["mount_point"]) / "PhotoBoothCamera")
     save_config()
     try:
         Path(CONFIG["upload"]["nas_path"]).mkdir(exist_ok=True)
@@ -1841,7 +1841,7 @@ def api_update_apply():
         busy = [j for j in jobs.values() if j["status"] in ("queued", "running")]
     if busy:
         return jsonify(ok=False, error="wait until running jobs have finished"), 409
-    return jsonify(ok=True, job=start_job("update", "minicamera", run_self_update)["id"])
+    return jsonify(ok=True, job=start_job("update", "photoboothcamera", run_self_update)["id"])
 
 
 @app.errorhandler(Exception)
@@ -1867,7 +1867,7 @@ def main():
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if args.demo:
-        os.environ["MINICAMERA_DEMO"] = "1"
+        os.environ["PHOTOBOOTH_DEMO"] = "1"
     camera = open_camera()
     atexit.register(lambda: camera.close())
     restore_controls(camera)

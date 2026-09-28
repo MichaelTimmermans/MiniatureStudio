@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Root helper for MiniCamera: mount a NAS share persistently (fstab).
+"""Root helper for PhotoBoothCamera: mount a NAS share persistently (fstab).
 
-Installed by install.sh as /usr/local/sbin/minicamera-mount (root-owned) with a
+Installed by install.sh as /usr/local/sbin/photoboothcamera-mount (root-owned) with a
 sudoers rule for the service user. Usage (JSON on stdin, JSON on stdout):
 
-    minicamera-mount mount    {"type": "smb"|"nfs", "server", "share", "username",
+    photoboothcamera-mount mount    {"type": "smb"|"nfs", "server", "share", "username",
                                "password", "domain", "version", "mount_point"}
-    minicamera-mount unmount
-    minicamera-mount status
+    photoboothcamera-mount unmount
+    photoboothcamera-mount status
 
-Only one MiniCamera share is managed; its fstab line is marked with MARKER.
+Only one PhotoBoothCamera share is managed; its fstab line is marked with MARKER.
 Inputs are validated strictly because this runs as root.
 """
 import json
@@ -19,10 +19,10 @@ import subprocess
 import sys
 
 FSTAB = "/etc/fstab"
-CRED_DIR = "/etc/minicamera"
+CRED_DIR = "/etc/photoboothcamera"
 CRED_FILE = f"{CRED_DIR}/nas.cred"
 STATE_FILE = f"{CRED_DIR}/nas.json"
-MARKER = "# minicamera-nas"
+MARKER = "# photoboothcamera-nas"
 
 HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$|^\[?[0-9A-Fa-f:.]+\]?$")
 SHARE_RE = re.compile(r"^[A-Za-z0-9._ $/-]{1,200}$")
@@ -46,7 +46,7 @@ def read_fstab():
 
 
 def write_fstab(lines):
-    tmp = FSTAB + ".minicamera.tmp"
+    tmp = FSTAB + ".photoboothcamera.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     os.replace(tmp, FSTAB)
@@ -117,7 +117,7 @@ def main():
         out({"configured": False, "mounted": False})
 
     if action != "mount":
-        fail("usage: minicamera-mount mount|unmount|status")
+        fail("usage: photoboothcamera-mount mount|unmount|status")
 
     try:
         req = json.loads(sys.stdin.read() or "{}")
@@ -145,11 +145,11 @@ def main():
     if not VERSION_RE.match(version):
         fail("invalid SMB version")
 
-    # The share is written as the user who ran sudo (the MiniCamera service user).
+    # The share is written as the user who ran sudo (the PhotoBoothCamera service user).
     uid = int(os.environ.get("SUDO_UID", "1000"))
     gid = int(os.environ.get("SUDO_GID", "1000"))
 
-    do_unmount(state)  # replace any previous MiniCamera share
+    do_unmount(state)  # replace any previous PhotoBoothCamera share
     os.makedirs(mount_point, exist_ok=True)
     common = "nofail,_netdev,x-systemd.automount,x-systemd.mount-timeout=30"
 

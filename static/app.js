@@ -635,7 +635,7 @@ const SETTINGS_SECTIONS = [
   }],
   ["Upload", "upload", {
     auto_drive: { label: "Upload to Google Drive automatically (when connected)", type: "checkbox" },
-    rclone_remote: { label: "Drive folder (rclone remote:path, e.g. gdrive:MiniCamera)", type: "text" },
+    rclone_remote: { label: "Drive folder (rclone remote:path, e.g. gdrive:PhotoBoothCamera)", type: "text" },
     auto_nas: { label: "Copy to NAS automatically", type: "checkbox" },
     nas_path: { label: "NAS folder (on the mounted share)", type: "text" },
     nas_require_mount: { label: "Refuse when the NAS folder is not on a mounted share", type: "checkbox" },

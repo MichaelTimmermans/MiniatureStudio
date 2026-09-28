@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Update MiniCamera to the latest version.
-#   minicamera-update               # pull, rebuild what changed, restart the service
-#   minicamera-update --check       # only report whether an update is available
-#   minicamera-update --no-restart  # used by the Update button in the web UI
+# Update PhotoBoothCamera to the latest version.
+#   photoboothcamera-update               # pull, rebuild what changed, restart the service
+#   photoboothcamera-update --check       # only report whether an update is available
+#   photoboothcamera-update --no-restart  # used by the Update button in the web UI
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -34,15 +34,15 @@ if ! git diff --quiet "$OLD" HEAD -- apt-packages.txt; then
     # shellcheck disable=SC2086
     sudo apt-get install -y $PKGS
   else
-    echo "WARNING: apt-packages.txt changed — run 'minicamera-update' from a terminal (needs sudo)"
+    echo "WARNING: apt-packages.txt changed — run 'photoboothcamera-update' from a terminal (needs sudo)"
   fi
 fi
 
-if ! git diff --quiet "$OLD" HEAD -- scripts/minicamera-mount scripts/install-mount-helper.sh; then
+if ! git diff --quiet "$OLD" HEAD -- scripts/photoboothcamera-mount scripts/install-mount-helper.sh; then
   if sudo -n true 2>/dev/null; then
     scripts/install-mount-helper.sh
   else
-    echo "WARNING: the NAS mount helper changed — run 'minicamera-update' from a terminal (needs sudo)"
+    echo "WARNING: the NAS mount helper changed — run 'photoboothcamera-update' from a terminal (needs sudo)"
   fi
 fi
 
@@ -51,7 +51,7 @@ if ! git diff --quiet "$OLD" HEAD -- vendor/focus-stack || [ ! -x vendor/focus-s
 fi
 
 echo "==> Now at $(git describe --tags --always)"
-if [ "$MODE" != "--no-restart" ] && systemctl is-enabled --quiet minicamera 2>/dev/null; then
-  sudo systemctl restart minicamera
+if [ "$MODE" != "--no-restart" ] && systemctl is-enabled --quiet photoboothcamera 2>/dev/null; then
+  sudo systemctl restart photoboothcamera
   echo "==> Service restarted"
 fi
