@@ -52,7 +52,7 @@ const HELP = {
 
   // ---------------------------------------------------------------- Settings: camera & performance
   lock_exposure_in_stacks: "At the start of a stack, freeze auto exposure and white balance so every frame matches. Frames that differ in brightness or colour cause halos. Auto returns after the stack.",
-  preview_mode: "fast: the live view uses a quick half-resolution sensor mode and switches to full resolution only for each capture — smooth preview. full: always full resolution — slower preview, no switch per capture.",
+  preview_mode: "fast: the live view uses a quick half-resolution sensor mode and switches to full resolution for each capture — smooth preview; with auto exposure/white balance the photo waits a moment until they settle. full: preview and photo use the very same sensor mode — the preview shows exactly what you get, but it is slower. Long exposure times slow any preview down (1/5 s = 5 frames per second).",
   save_queue: "How many captured frames may wait to be written at once. Each one takes ~36 MB of RAM (12 MP). On a 1 GB Pi 3B keep 2.",
   compress_workers: "Background workers that compress TIFF to PNG. 0 = one per CPU core minus one. They run at low priority. Applies after a restart.",
 

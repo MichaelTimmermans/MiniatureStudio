@@ -368,12 +368,16 @@ class RealCamera:
         """Binned sensor mode (2028x1520 on the HQ camera): many more fps than full-res."""
         w, h = self.picam2.sensor_resolution
         binned = (w // 2 // 2 * 2, h // 2 // 2 * 2)
-        return self._with_controls(self.picam2.create_preview_configuration(
+        cfg = self.picam2.create_preview_configuration(
             main={"size": tuple(CONFIG["camera"]["preview_size"]), "format": "YUV420"},
             sensor={"output_size": binned},
             display=None,
             buffer_count=4,
-        ))
+        )
+        # Picamera2's preview preset caps frames at 83 ms, i.e. the exposure time: the
+        # preview would then be darker than the photo. Allow the same range as stills.
+        cfg["controls"]["FrameDurationLimits"] = (100, 1_000_000)
+        return self._with_controls(cfg)
 
     def _apply_saved_controls(self):
         if self.applied:
@@ -435,16 +439,39 @@ class RealCamera:
             log.warning("Resetting some controls failed: %s", exc)
 
     # -- capture ------------------------------------------------------------
+    @property
+    def auto_adjusting(self):
+        """True while auto exposure or auto white balance can still change the image."""
+        a = self.applied
+        auto_exposure = a.get("AeEnable", True) is not False and a.get("ExposureTimeMode", 0) != 1
+        return auto_exposure or a.get("AwbEnable", True) is not False
+
     def grab(self):
         """Take one full-resolution frame -> (PIL image, metadata). Saving happens elsewhere."""
         switched = self.mode == "preview"
+        preview_md = {}
         if switched:
+            try:
+                preview_md = self.picam2.capture_metadata()
+            except Exception:
+                pass
             # Preview runs binned: switch to the full sensor mode for this one frame.
             self.stop_all()
             self.picam2.configure(self._still_config(with_lores=False))
             self.picam2.start()
+        skipped = 0
         try:
             req = self.picam2.capture_request()
+            # After a mode switch auto exposure / white balance need a few frames to
+            # settle; the first frame can be a stop off (seen in real stacks). Wait until
+            # two consecutive frames agree, at most 6 frames. Manual settings: no wait.
+            while switched and self.auto_adjusting and skipped < 6:
+                md = req.get_metadata()
+                req.release()
+                req = self.picam2.capture_request()
+                skipped += 1
+                if exposure_settled(md, req.get_metadata()):
+                    break
             try:
                 image = req.make_image("main")  # copies the buffer
                 metadata = req.get_metadata()
@@ -454,7 +481,26 @@ class RealCamera:
             if switched:
                 self.picam2.stop()
                 self.start_still_mode()
+        if preview_md:
+            log.info("capture: preview %s -> photo %s (%d settle frames)",
+                     exposure_summary(preview_md), exposure_summary(metadata), skipped)
         return image, metadata
+
+    def capture_crop(self, x, y, cw, ch):
+        """100% crop around (x, y) (0..1) from the main stream without copying the full
+        12MP frame — the focus check runs every second."""
+        from picamera2 import MappedArray
+
+        req = self.picam2.capture_request()
+        try:
+            with MappedArray(req, "main") as m:
+                h, w = m.array.shape[:2]
+                cw, ch = min(cw, w), min(ch, h)
+                left = int(min(max(x * w - cw / 2, 0), w - cw))
+                top = int(min(max(y * h - ch / 2, 0), h - ch))
+                return m.array[top:top + ch, left:left + cw, :3].copy()
+        finally:
+            req.release()
 
     def capture(self, path):
         image, metadata = self.grab()
@@ -508,6 +554,28 @@ class RealCamera:
             self.picam2.close()
         except Exception:
             pass
+
+
+def exposure_summary(md):
+    parts = []
+    if md.get("ExposureTime"):
+        parts.append(f"{md['ExposureTime'] / 1000:.1f}ms")
+    if md.get("AnalogueGain"):
+        parts.append(f"gain {md['AnalogueGain']:.2f}")
+    if md.get("ColourGains"):
+        parts.append("wb " + "/".join(f"{g:.2f}" for g in md["ColourGains"]))
+    return " ".join(parts) or "?"
+
+
+def exposure_settled(a, b, tolerance=0.03):
+    """Two consecutive frames with (nearly) the same exposure, gain and white balance."""
+    def close(x, y):
+        if x is None or y is None:
+            return True
+        return abs(x - y) <= tolerance * max(abs(x), abs(y), 1e-6)
+    pairs = [(a.get("ExposureTime"), b.get("ExposureTime")), (a.get("AnalogueGain"), b.get("AnalogueGain"))]
+    pairs += list(zip(a.get("ColourGains") or (), b.get("ColourGains") or ()))
+    return all(close(x, y) for x, y in pairs)
 
 
 class DemoCamera:
@@ -1960,12 +2028,15 @@ def api_focus_check():
     with camera_lock:
         if camera.mode == "preview":
             camera.set_hold_full(True)  # real 100% crops need the full sensor mode
-        frame = camera.capture_main_array()
-    h, w = frame.shape[:2]
-    cw, ch = min(size, w), min(int(size * 0.75), h)
-    left = int(min(max(x * w - cw / 2, 0), w - cw))
-    top = int(min(max(y * h - ch / 2, 0), h - ch))
-    crop = frame[top:top + ch, left:left + cw, :3]
+        if hasattr(camera, "capture_crop"):
+            crop = camera.capture_crop(x, y, size, int(size * 0.75))
+        else:
+            frame = camera.capture_main_array()
+            h, w = frame.shape[:2]
+            cw, ch = min(size, w), min(int(size * 0.75), h)
+            left = int(min(max(x * w - cw / 2, 0), w - cw))
+            top = int(min(max(y * h - ch / 2, 0), h - ch))
+            crop = frame[top:top + ch, left:left + cw, :3]
     if camera.bgr_arrays:
         crop = crop[:, :, ::-1]  # picamera2 "RGB888" arrays are BGR ordered
     score = laplacian_variance(crop.astype(np.float32).mean(axis=2))
