@@ -118,3 +118,7 @@ ol { padding-left: 20px; }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
 .grid2 input, .grid2 select { width: 100%; min-width: 0; }
 @media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
+
+#clip-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; image-rendering: pixelated; }
+#histogram-box { margin-top: 8px; }
+#histogram { width: 100%; max-width: 512px; height: 140px; display: block; background: #0b0c0e; border: 1px solid var(--border); }

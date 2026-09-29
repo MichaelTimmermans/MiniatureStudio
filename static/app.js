@@ -143,7 +143,7 @@ $("#btn-photo").addEventListener("click", () => guarded(async () => {
 
 $("#btn-stack-start").addEventListener("click", () => guarded(async () => {
   const r = await api("/api/stack/start", "POST", { label: label() });
-  say(`Stack ${r.name} started — set focus and take frames`);
+  say(`Stack ${r.name} started — set focus and take frames` + (r.exposure_locked ? " (exposure & white balance locked)" : ""));
   refreshStatus();
 }));
 
@@ -470,6 +470,88 @@ setInterval(async () => {
   try { renderLive((await api("/api/controls")).live); } catch (_) { /* ignore */ }
 }, 2000);
 
+// ---------------------------------------------------------------- histogram & clipping (computed in the browser)
+const HIST_W = 320, HIST_H = 240;
+const sampler = Object.assign(document.createElement("canvas"), { width: HIST_W, height: HIST_H });
+const samplerCtx = sampler.getContext("2d", { willReadFrequently: true });
+let histTimer = null;
+
+function histogramLoop() {
+  clearTimeout(histTimer);
+  const wantHist = $("#toggle-histogram").checked, wantClip = $("#toggle-clipping").checked;
+  if (!wantHist && !wantClip) return;
+  const img = $("#preview");
+  if (img.naturalWidth && !document.hidden) {
+    try {
+      samplerCtx.drawImage(img, 0, 0, HIST_W, HIST_H);
+      const px = samplerCtx.getImageData(0, 0, HIST_W, HIST_H).data;
+      const bins = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+      let high = 0, low = 0;
+      const clip = wantClip ? samplerCtx.createImageData(HIST_W, HIST_H) : null;
+      for (let i = 0; i < px.length; i += 4) {
+        const r = px[i], g = px[i + 1], b = px[i + 2];
+        const l = (r * 54 + g * 183 + b * 19) >> 8;  // Rec.709 luma
+        bins[0][r]++; bins[1][g]++; bins[2][b]++; bins[3][l]++;
+        if (r >= 254 || g >= 254 || b >= 254) {
+          high++;
+          if (clip) { clip.data[i] = 255; clip.data[i + 3] = 200; }  // red where a channel blows out
+        } else if (l <= 2) low++;
+      }
+      const n = px.length / 4;
+      if (wantHist) drawHistogram(bins, high / n, low / n);
+      if (clip) {
+        const ov = $("#clip-overlay");
+        ov.width = HIST_W; ov.height = HIST_H;
+        ov.getContext("2d").putImageData(clip, 0, 0);
+      }
+    } catch (_) { /* frame not decodable yet */ }
+  }
+  histTimer = setTimeout(histogramLoop, 700);
+}
+
+function drawHistogram(bins, highFrac, lowFrac) {
+  const c = $("#histogram"), ctx = c.getContext("2d"), w = c.width, h = c.height;
+  ctx.clearRect(0, 0, w, h);
+  // sqrt scale: the huge black-background peak would otherwise flatten everything else
+  const peak = Math.sqrt(Math.max(...bins.slice(0, 3).map((b) => Math.max(...b.slice(1, 255))), 1));
+  const colours = ["rgba(255,70,70,.55)", "rgba(70,220,90,.55)", "rgba(80,140,255,.55)"];
+  ctx.globalCompositeOperation = "lighter";
+  bins.slice(0, 3).forEach((b, ch) => {
+    ctx.fillStyle = colours[ch];
+    for (let v = 0; v < 256; v++) {
+      const bh = Math.min(h, (Math.sqrt(b[v]) / peak) * h);
+      ctx.fillRect(v * (w / 256), h - bh, w / 256 + 0.5, bh);
+    }
+  });
+  ctx.globalCompositeOperation = "source-over";
+  ctx.strokeStyle = "rgba(255,255,255,.8)";
+  ctx.beginPath();
+  for (let v = 0; v < 256; v++) {
+    const y = h - Math.min(h, (Math.sqrt(bins[3][v]) / peak) * h);
+    v ? ctx.lineTo(v * (w / 256), y) : ctx.moveTo(0, y);
+  }
+  ctx.stroke();
+  const pct = (f) => (f * 100).toFixed(f < 0.01 ? 2 : 1) + "%";
+  const info = $("#histogram-info");
+  info.textContent = `Blown highlights: ${pct(highFrac)} · pure black: ${pct(lowFrac)}`;
+  info.className = "small " + (highFrac > 0.005 ? "error" : "muted");
+  if (highFrac > 0.005) info.textContent += " — lower ExposureTime or AnalogueGain";
+}
+
+["#toggle-histogram", "#toggle-clipping"].forEach((id) => $(id).addEventListener("change", () => {
+  $("#histogram-box").hidden = !$("#toggle-histogram").checked;
+  $("#clip-overlay").hidden = !$("#toggle-clipping").checked;
+  histogramLoop();
+}));
+
+$("#btn-lock-exposure").addEventListener("click", () => guarded(async () => {
+  const r = await api("/api/controls/lock_exposure", "POST", {});
+  await loadControls();
+  $("#live").textContent = Object.keys(r.locked).length
+    ? "Exposure and white balance locked: " + Object.entries(r.locked).map(([k, v]) => `${k}=${Array.isArray(v) ? v.map((x) => +(+x).toFixed(3)).join("/") : +(+v).toFixed(3)}`).join(", ")
+    : "Already manual — nothing to lock.";
+}, "#live"));
+
 // ---------------------------------------------------------------- viewer
 const isTiff = (name) => /\.tiff?$/i.test(name);
 function openViewer(title, url, isVideo = false) {
@@ -695,7 +777,8 @@ const SETTINGS_SECTIONS = [
     save_metadata: { label: "Save metadata sidecar (.json)", type: "checkbox" },
     persist_controls: { label: "Remember camera controls after restart (when no boot preset is set)", type: "checkbox" },
   }],
-  ["Performance", "camera", {
+  ["Camera & performance", "camera", {
+    lock_exposure_in_stacks: { label: "Lock exposure & white balance during a stack (prevents brightness/colour shifts between frames — a common cause of halos)", type: "checkbox" },
     preview_mode: { label: "Live preview (fast = binned sensor mode, switches to full-res for each capture; full = always full-res, slower preview)", options: ["fast", "full"] },
     save_queue: { label: "Frames waiting to be written (each ~36 MB RAM; Pi 3B: 2)", type: "number" },
     compress_workers: { label: "Compression workers (0 = one per CPU core minus one; applies after restart)", type: "number" },

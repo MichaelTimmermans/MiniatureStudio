@@ -18,11 +18,18 @@
       <img id="preview" src="/stream.mjpg" alt="Live preview">
       <div id="grid-overlay" hidden></div>
       <div id="focus-marker" hidden></div>
+      <canvas id="clip-overlay" hidden></canvas>
     </div>
     <div class="row small">
       <label><input type="checkbox" id="toggle-grid"> Grid</label>
       <label><input type="checkbox" id="toggle-focus"> Focus check (100% crop)</label>
+      <label><input type="checkbox" id="toggle-histogram"> Histogram</label>
+      <label><input type="checkbox" id="toggle-clipping"> Show clipping</label>
       <span class="muted">Click the preview to choose the focus point</span>
+    </div>
+    <div id="histogram-box" hidden>
+      <canvas id="histogram" width="512" height="140"></canvas>
+      <div class="small" id="histogram-info"></div>
     </div>
     <div id="focus-check" hidden>
       <img id="focus-crop" alt="Focus crop">
@@ -110,6 +117,7 @@
       <div class="row">
         <input id="control-filter" placeholder="Filter controls…">
         <button id="btn-af" hidden>Autofocus</button>
+        <button id="btn-lock-exposure" title="Keep the current auto exposure and white balance as fixed manual values">Lock exposure &amp; WB</button>
         <button id="btn-controls-reset">Reset all</button>
       </div>
       <div id="live" class="small"></div>

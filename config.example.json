@@ -29,7 +29,8 @@
     ],
     "buffer_count": 2,
     "save_queue": 2,
-    "compress_workers": 0
+    "compress_workers": 0,
+    "lock_exposure_in_stacks": true
   },
   "video": {
     "size": [

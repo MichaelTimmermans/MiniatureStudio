@@ -98,6 +98,19 @@ The header shows what is still being written or compressed. Set the image
 format to `tif` to skip compression entirely (files ~1.8× larger); TIFF files
 then get a **Download PNG** button that compresses on download.
 
+## Exposure tips (and avoiding halos)
+
+- **Histogram** and **Show clipping** (below the preview) are computed in the
+  browser from the live view; clipped highlights are marked red.
+- During a stack, exposure and white balance are **locked** automatically
+  (Settings → Camera & performance), so all frames match — brightness or
+  colour shifts between frames are a common cause of halos. **Lock exposure &
+  WB** in the Camera tab does the same permanently.
+- Set **Sharpness** to 0: in-camera sharpening draws bright rims around edges
+  against a black background, and stacking makes them worse.
+- Use **AnalogueGain 1.0** with a longer ExposureTime for a static model: less
+  noise in the black background.
+
 ## Jobs
 
 Long tasks run in the background so you can keep shooting: focus-stack

@@ -1242,6 +1242,69 @@ def sweep_positions(start, end, steps):
     return [round(start + (end - start) * i / (steps - 1), 4) for i in range(steps)]
 
 
+# Values that hand a control back to the automatic algorithms (Raspberry Pi libcamera:
+# ExposureTime / AnalogueGain 0 = auto). ColourGains has no "auto" value: AwbEnable does it.
+AUTO_VALUES = {"AeEnable": True, "AwbEnable": True, "ExposureTime": 0, "AnalogueGain": 0,
+               "ExposureTimeMode": 0, "AnalogueGainMode": 0}
+
+
+def exposure_lock_controls():
+    """Controls that freeze the current auto exposure / white balance; {} if already manual."""
+    cc, applied = camera.camera_controls, camera.applied
+    with camera_lock:
+        md = camera.metadata()
+    lock = {}
+    auto_exposure = applied.get("AeEnable", True) is not False and applied.get("ExposureTimeMode", 0) != 1
+    if auto_exposure and md.get("ExposureTime"):
+        for name in ("ExposureTime", "AnalogueGain"):
+            if name in cc and md.get(name) is not None:
+                lock[name] = md[name]
+        if "ExposureTimeMode" in cc:  # newer libcamera
+            lock["ExposureTimeMode"] = 1
+            if "AnalogueGainMode" in cc:
+                lock["AnalogueGainMode"] = 1
+        elif "AeEnable" in cc:
+            lock["AeEnable"] = False
+    if applied.get("AwbEnable", True) is not False and md.get("ColourGains") and "ColourGains" in cc:
+        lock["ColourGains"] = tuple(md["ColourGains"])
+        if "AwbEnable" in cc:
+            lock["AwbEnable"] = False
+    return {k: coerce_control(k, v, cc[k]) for k, v in lock.items()}
+
+
+def lock_exposure_for_stack():
+    """Frames of one stack must match in brightness and colour, or focus-stack leaves halos."""
+    if not CONFIG["camera"].get("lock_exposure_in_stacks", True):
+        return None
+    lock = exposure_lock_controls()
+    if not lock:
+        return None
+    before = {k: camera.applied[k] for k in lock if k in camera.applied}
+    with camera_lock:
+        camera.set_controls(lock)
+    log.info("Stack: exposure/white balance locked at %s", jsonable(lock))
+    return {"locked": list(lock), "before": before}
+
+
+def unlock_exposure(state):
+    if not state:
+        return
+    restore = {}
+    for name in state["locked"]:
+        if name in state["before"]:
+            restore[name] = state["before"][name]
+        elif name in AUTO_VALUES:
+            restore[name] = AUTO_VALUES[name]
+    with camera_lock:
+        try:
+            camera.set_controls(restore)
+        except Exception as exc:
+            log.warning("Restoring auto exposure failed: %s", exc)
+        for name in state["locked"]:
+            if name not in state["before"]:
+                camera.applied.pop(name, None)  # was automatic: do not keep or persist it
+
+
 def run_sweep(job, name, positions, settle_ms, process):
     """Capture one stack frame per lens position, then optionally process it."""
     global active_stack
@@ -1267,7 +1330,9 @@ def run_sweep(job, name, positions, settle_ms, process):
     finally:
         with state_lock:
             count = active_stack["count"] if active_stack else 0
+            exposure_state = active_stack.get("exposure_lock") if active_stack else None
             active_stack = None
+        unlock_exposure(exposure_state)
     result = {"frames": count}
     if process and count >= 2 and not job.get("cancel"):
         result["process_job"] = start_job("focus-stack", name, run_focus_stack, name, None)["id"]
@@ -1431,6 +1496,19 @@ def api_controls():
     return jsonify(ok=not errors, applied=jsonable(camera.applied), errors=errors)
 
 
+@app.route("/api/controls/lock_exposure", methods=["POST"])
+def api_lock_exposure():
+    """One click: keep the current auto exposure and white balance as manual values."""
+    lock = exposure_lock_controls()
+    if lock:
+        with camera_lock:
+            camera.set_controls(lock)
+        if CONFIG.get("persist_controls", True):
+            CONFIG.setdefault("controls", {})[camera.model] = jsonable(camera.applied)
+            save_config()
+    return jsonify(ok=True, locked=jsonable(lock))
+
+
 @app.route("/api/camera_info")
 def api_camera_info():
     binary = find_focus_stack()
@@ -1549,7 +1627,8 @@ def api_preset_default():
 @app.route("/api/status")
 def api_status():
     with state_lock:
-        stack = dict(active_stack, dir=None) if active_stack else None
+        stack = ({**active_stack, "dir": None, "exposure_lock": bool(active_stack.get("exposure_lock"))}
+                 if active_stack else None)
         rec = dict(recording, path=recording["path"] and Path(recording["path"]).name)
     return jsonify(recording=rec, stack=stack, next_seq=CONFIG.get("next_seq", 1),
                    saving=save_queue.status(), compressing=compressor.status(),
@@ -1711,7 +1790,8 @@ def api_stack_start():
         meta = {"name": name, "label": label, "created": datetime.now().isoformat(timespec="seconds")}
         (stack_dir / "stack.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         active_stack = {"name": name, "dir": str(stack_dir), "count": 0}
-    return jsonify(ok=True, name=name)
+    active_stack["exposure_lock"] = lock_exposure_for_stack()
+    return jsonify(ok=True, name=name, exposure_locked=bool(active_stack["exposure_lock"]))
 
 
 @app.route("/api/stack/frame", methods=["POST"])
@@ -1746,6 +1826,7 @@ def api_stack_end():
         if active_stack.get("sweep"):
             return jsonify(ok=False, error="a lens sweep is running — cancel it instead"), 409
         finished, active_stack = active_stack, None
+    unlock_exposure(finished.get("exposure_lock"))
     body = request.get_json(silent=True) or {}
     job, uploads = None, []
     # AF cameras always auto-stack; manual-focus rigs decide per stack.
@@ -1791,6 +1872,7 @@ def api_stack_sweep():
                 "sweep": {"start": start, "end": end, "steps": steps, "settle_ms": settle}}
         (base / name / "stack.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         active_stack = {"name": name, "dir": str(base / name), "count": 0, "sweep": True, "total": steps}
+    active_stack["exposure_lock"] = lock_exposure_for_stack()
     job = start_job("sweep", name, run_sweep, name, sweep_positions(start, end, steps), settle, True)
     active_stack["job"] = job["id"]
     return jsonify(ok=True, name=name, job=job["id"])
