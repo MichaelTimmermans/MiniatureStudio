@@ -1614,7 +1614,10 @@ def run_sweep(job, name, positions, settle_ms, process):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # Cache-busting: a changed file gets a new ?v=, so browsers load it right after an update.
+    static = BASE_DIR / "static"
+    asset_v = int(max((f.stat().st_mtime for f in static.iterdir() if f.is_file()), default=0))
+    return render_template("index.html", asset_v=asset_v)
 
 
 @app.route("/stream.mjpg")
