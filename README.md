@@ -53,6 +53,25 @@ All libcamera controls of the camera appear in the UI automatically. Save them
 as **presets** (per camera model); mark one preset as **Load at boot**. Without
 a boot preset, the last used controls are restored.
 
+### Arducam 16MP / 64MP and other third-party sensors
+
+Official Raspberry Pi cameras are detected automatically. Arducam's 16MP
+(IMX519) and 64MP (Hawkeye, OV64A40) autofocus cameras need a line in
+`config.txt`: **Camera tab → Camera sensor setup → pick the sensor → Apply &
+reboot**. The app sets `camera_auto_detect=0` plus the right `dtoverlay`
+(with a CAM0/CAM1 port on a Pi 5 or Compute Module) and keeps a backup as
+`config.txt.miniaturestudio.bak`; "Auto-detect" undoes it. 64MP frames are
+~190 MB in memory: use a Pi 4/5, or choose a lower **Capture resolution**.
+
+### USB webcams
+
+UVC webcams work through the same app: pick them in the camera list (shown
+as "(USB)"). MJPEG webcams are passed through without re-encoding — preview
+and video (`.avi`, needs ffmpeg) cost the Pi almost nothing. YUYV-only
+webcams do preview and photos but no video. USB cameras can be plugged in
+while running: press **Rescan cameras**. Resolution: the webcam's largest
+MJPEG size (override with `camera.usb_size` in `config.json`).
+
 ### Autofocus cameras (e.g. Camera Module 3)
 
 When the camera supports `AfMode`/`LensPosition`:

@@ -31,7 +31,7 @@ EXAMPLE_CONFIG_PATH = BASE_DIR / "config.example.json"
 VENDORED_FOCUS_STACK = BASE_DIR / "vendor" / "focus-stack" / "build" / "focus-stack"
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
-VIDEO_EXTS = {".mp4", ".h264"}
+VIDEO_EXTS = {".mp4", ".h264", ".avi"}
 
 log = logging.getLogger("miniaturestudio")
 app = Flask(__name__)
@@ -285,6 +285,7 @@ class StreamingOutput(io.BufferedIOBase):
 
 class RealCamera:
     demo = False
+    bgr_arrays = True  # picamera2 "RGB888" arrays are BGR ordered
 
     def __init__(self, index=0, stream=None):
         from picamera2 import Picamera2
@@ -299,6 +300,14 @@ class RealCamera:
         self.applied = {}
         self.hold_full = False  # focus check wants real 100% crops
         self.mode = None        # "preview" (binned, fast) or "full"
+        try:  # probing modes reconfigures the sensor: only possible before start()
+            self.sensor_modes = sorted(
+                ({"size": list(m["size"]), "fps": round(float(m.get("fps") or 0), 1),
+                  "bit_depth": m.get("bit_depth")} for m in self.picam2.sensor_modes),
+                key=lambda m: -m["size"][0] * m["size"][1])
+        except Exception as exc:
+            log.warning("Could not list sensor modes: %s", exc)
+            self.sensor_modes = []
         self.start_still_mode()
 
     def _pick_encoders(self):
@@ -491,6 +500,9 @@ class DemoCamera:
     """Stand-in when picamera2 is unavailable (e.g. developing on a PC)."""
 
     demo = True
+    bgr_arrays = False
+    sensor_modes = [{"size": [2028, 1520], "fps": 40.0, "bit_depth": 12},
+                    {"size": [1014, 760], "fps": 120.0, "bit_depth": 10}]
     sensor_resolution = (2028, 1520)
     has_autofocus = True  # so the sweep UI can be exercised without hardware
 
@@ -592,6 +604,185 @@ class DemoCamera:
 
     def close(self):
         self.closed = True
+
+
+class USBCamera:
+    """UVC webcam through Picamera2/libcamera: a single stream, no ISP tricks.
+
+    MJPEG webcams send finished JPEG frames: the preview passes them straight to the
+    browser and video copies them into a file with ffmpeg, so a Pi 3B does no
+    encoding at all. YUYV-only webcams work for preview and photos (no video)."""
+
+    demo = False
+    bgr_arrays = False
+    has_autofocus = False
+    hold_full = False
+    PREVIEW_FPS = 10
+
+    def __init__(self, index=0, stream=None):
+        from picamera2 import Picamera2
+
+        self.index = index
+        self.picam2 = Picamera2(index)
+        self.model = self.picam2.camera_properties.get("Model", f"usb{index}")
+        self.stream = stream or StreamingOutput()
+        self.applied = {}
+        self.mode = "usb"
+        self.format, self.size = self._pick_format()
+        cfg = self.picam2.create_still_configuration(
+            main={"size": self.size, "format": self.format}, display=None, buffer_count=3, queue=False)
+        self.picam2.configure(cfg)
+        self.picam2.start()
+        self._still_wanted = threading.Event()
+        self._still = None
+        self._still_ready = threading.Event()
+        self._recorder = None
+        self._closed = False
+        threading.Thread(target=self._loop, daemon=True, name="usb-camera").start()
+        log.info("USB camera %s: %s %sx%s", self.model, self.format, *self.size)
+
+    def _pick_format(self):
+        """Largest MJPEG size (else YUYV) the webcam offers, or camera.usb_size."""
+        from libcamera import StreamRole
+
+        formats = self.picam2.camera.generate_configuration([StreamRole.StillCapture]).at(0).formats
+        offered = {str(pf): [(s.width, s.height) for s in formats.sizes(pf)] for pf in formats.pixel_formats}
+        wanted = CONFIG["camera"].get("usb_size")
+        for fmt in ("MJPEG", "YUYV"):
+            sizes = offered.get(fmt)
+            if sizes:
+                if wanted and tuple(wanted) in sizes:
+                    return fmt, tuple(wanted)
+                return fmt, max(sizes, key=lambda s: s[0] * s[1])
+        raise RuntimeError(f"webcam offers no MJPEG/YUYV format ({', '.join(offered)})")
+
+    @property
+    def camera_controls(self):
+        return self.picam2.camera_controls
+
+    @property
+    def sensor_resolution(self):
+        return self.size
+
+    sensor_modes = []
+
+    def _decode(self, req):
+        if self.format == "MJPEG":
+            from PIL import Image
+            return Image.open(io.BytesIO(req.make_buffer("main").tobytes())).convert("RGB")
+        import cv2
+        from PIL import Image
+        w, h = self.size
+        arr = req.make_array("main")
+        arr = arr.reshape(arr.shape[0], -1)[:h, :w * 2].reshape(h, w, 2)
+        return Image.fromarray(cv2.cvtColor(arr, cv2.COLOR_YUV2RGB_YUYV))
+
+    def _preview_jpeg(self, req):
+        if self.format == "MJPEG":
+            return req.make_buffer("main").tobytes()
+        buf = io.BytesIO()
+        img = self._decode(req)
+        img.thumbnail(tuple(CONFIG["camera"]["preview_size"]))
+        img.save(buf, "JPEG", quality=80)
+        return buf.getvalue()
+
+    def _loop(self):
+        last_preview = 0.0
+        while not self._closed:
+            try:
+                req = self.picam2.capture_request()
+            except Exception as exc:
+                log.warning("USB camera: %s", exc)
+                time.sleep(1)
+                continue
+            try:
+                if self._still_wanted.is_set():  # a photo: the first frame after the click
+                    self._still = (self._decode(req), req.get_metadata())
+                    self._still_wanted.clear()
+                    self._still_ready.set()
+                rec = self._recorder
+                if rec and self.format == "MJPEG":
+                    try:
+                        rec.stdin.write(req.make_buffer("main").tobytes())
+                    except (BrokenPipeError, OSError):
+                        log.warning("USB video: ffmpeg stopped")
+                        self._recorder = None
+                now = time.time()
+                if now - last_preview >= 1 / self.PREVIEW_FPS:
+                    last_preview = now
+                    self.stream.write(self._preview_jpeg(req))
+            except Exception:
+                log.exception("USB camera frame failed")
+            finally:
+                req.release()
+
+    def metadata(self):
+        return self.picam2.capture_metadata()
+
+    def set_controls(self, controls):
+        self.picam2.set_controls(controls)
+        self.applied.update(controls)
+
+    def reset_controls(self):
+        defaults = {name: info[2] for name, info in self.camera_controls.items()
+                    if name not in HIDDEN_CONTROLS and info[2] is not None}
+        self.applied = {}
+        try:
+            self.picam2.set_controls(defaults)
+        except Exception as exc:
+            log.warning("Resetting some controls failed: %s", exc)
+
+    def set_hold_full(self, on):
+        pass
+
+    def grab(self):
+        self._still_ready.clear()
+        self._still_wanted.set()
+        if not self._still_ready.wait(10):
+            raise RuntimeError("the USB camera delivered no frame")
+        return self._still
+
+    def capture(self, path):
+        image, metadata = self.grab()
+        save_image(image, path)
+        return metadata
+
+    def capture_main_array(self):
+        import numpy as np
+        return np.asarray(self.grab()[0])
+
+    def autofocus(self):
+        return False, None
+
+    def start_video(self, stem, directory):
+        if self.format != "MJPEG":
+            raise RuntimeError("video needs a webcam with MJPEG output")
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("video from a USB camera needs ffmpeg (sudo apt install ffmpeg)")
+        path = directory / f"{stem}.avi"
+        # -c copy: the webcam's JPEG frames go into the file untouched (no CPU cost).
+        self._recorder = subprocess.Popen(
+            [ffmpeg, "-loglevel", "error", "-f", "mjpeg", "-framerate", "30", "-i", "-", "-c", "copy", str(path)],
+            stdin=subprocess.PIPE)
+        self.mode = "video"
+        return path
+
+    def stop_video(self):
+        rec, self._recorder = self._recorder, None
+        if rec:
+            rec.stdin.close()
+            rec.wait(timeout=30)
+        self.mode = "usb"
+
+    def close(self):
+        self._closed = True
+        try:
+            self.stop_video()
+            self.picam2.stop()
+            self.picam2.close()
+        except Exception:
+            pass
 
 
 def save_image(image, path):
@@ -804,8 +995,14 @@ def list_cameras():
     if demo_mode():
         return [{"index": 0, "model": "demo", "location": None, "id": "demo"}]
     from picamera2 import Picamera2
-    return [{"index": i, "model": c.get("Model"), "location": c.get("Location"), "id": c.get("Id")}
+    return [{"index": i, "model": c.get("Model"), "location": c.get("Location"), "id": c.get("Id"),
+             "usb": is_usb_camera(c)}
             for i, c in enumerate(Picamera2.global_camera_info())]
+
+
+def is_usb_camera(info):
+    """UVC webcams sit on a USB path; Raspberry Pi CSI cameras on /base/.../i2c."""
+    return "usb" in str(info.get("Id", "")).lower()
 
 
 def open_camera(index=None, stream=None):
@@ -820,7 +1017,9 @@ def open_camera(index=None, stream=None):
     if index >= len(cameras):
         log.warning("Configured camera %s not present, using camera 0", index)
         index = 0
-    log.info("Opening camera %s: %s", index, cameras[index]["model"])
+    log.info("Opening camera %s: %s%s", index, cameras[index]["model"], " (USB)" if cameras[index]["usb"] else "")
+    if cameras[index]["usb"]:
+        return USBCamera(index, stream=stream)
     return RealCamera(index, stream=stream)
 
 
@@ -1574,6 +1773,9 @@ def api_camera_info():
         has_autofocus=camera.has_autofocus,
         demo=camera.demo,
         sensor_resolution=list(camera.sensor_resolution),
+        sensor_modes=getattr(camera, "sensor_modes", []),
+        usb=isinstance(camera, USBCamera),
+        still_size=CONFIG["camera"].get("still_size"),
         focus_stack={"available": bool(method), "method": method, "binary": binary,
                      "halofree": halofree_available(),
                      "version": focus_stack_version(binary) if binary else None},
@@ -1607,6 +1809,21 @@ def api_cameras():
         restore_controls(camera)
     return jsonify(ok=True, cameras=list_cameras(), active=camera.index, model=camera.model,
                    default=int(CONFIG["camera"].get("index") or 0))
+
+
+@app.route("/api/camera/sensor", methods=["GET", "POST"])
+def api_camera_sensor():
+    """Third-party CSI sensors (Arducam 16/64MP) need a dtoverlay in config.txt + reboot."""
+    try:
+        if request.method == "POST":
+            body = request.get_json(force=True) or {}
+            result = run_mount_helper("camera-set", {"sensor": body.get("sensor", "auto"),
+                                                     "port": body.get("port", "")})
+        else:
+            result = run_mount_helper("camera-status")
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    return jsonify(ok=True, **result)
 
 
 @app.route("/api/cameras/default", methods=["POST"])
@@ -1731,7 +1948,7 @@ def api_focus_check():
     left = int(min(max(x * w - cw / 2, 0), w - cw))
     top = int(min(max(y * h - ch / 2, 0), h - ch))
     crop = frame[top:top + ch, left:left + cw, :3]
-    if not camera.demo:
+    if camera.bgr_arrays:
         crop = crop[:, :, ::-1]  # picamera2 "RGB888" arrays are BGR ordered
     score = laplacian_variance(crop.astype(np.float32).mean(axis=2))
     buf = io.BytesIO()

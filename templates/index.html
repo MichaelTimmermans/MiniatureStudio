@@ -101,8 +101,34 @@
         <div class="row">
           <select id="camera-select"></select>
           <button id="btn-camera-default">Set as default</button>
+          <button id="btn-camera-rescan" title="USB cameras can be plugged in while the Pi runs; the app restarts to find them">Rescan cameras</button>
         </div>
-        <div class="muted small">Cameras are detected at startup. Connect a new camera with the Pi switched off.</div>
+        <div class="muted small">Pi cameras (ribbon cable): connect with the Pi switched off. USB webcams: plug in, then Rescan.</div>
+        <div class="row" id="resolution-row" hidden>
+          <label>Capture resolution <select id="still-size"></select></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Camera sensor setup</legend>
+        <div class="row">
+          <select id="sensor-select">
+            <option value="auto">Auto-detect (official Raspberry Pi cameras)</option>
+            <option value="imx519">Arducam 16MP autofocus (IMX519)</option>
+            <option value="arducam-64mp">Arducam 64MP Hawkeye autofocus</option>
+            <option value="ov64a40">Arducam 64MP OV64A40 autofocus</option>
+            <option value="imx708">Camera Module 3 (IMX708) — force</option>
+            <option value="imx477">HQ Camera (IMX477) — force</option>
+            <option value="imx219">Camera Module 2 (IMX219) — force</option>
+            <option value="ov5647">Camera Module 1 (OV5647) — force</option>
+          </select>
+          <select id="sensor-port" title="Only on boards with two camera connectors (Pi 5, Compute Module)">
+            <option value="">default port</option><option value="cam0">CAM0</option><option value="cam1">CAM1</option>
+          </select>
+          <button id="btn-sensor-apply">Apply &amp; reboot</button>
+        </div>
+        <div class="muted small" id="sensor-info">Official cameras are found automatically. Arducam's 16MP and 64MP need
+          this setting (writes <code>config.txt</code>, keeps a backup). 64MP frames need a Pi 4/5 — on a Pi 3B pick a lower
+          capture resolution.</div>
       </fieldset>
       <fieldset>
         <legend>Presets for <span id="preset-model"></span></legend>

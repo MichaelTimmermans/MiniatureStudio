@@ -375,10 +375,47 @@ async function loadCameras() {
   const r = cameraState;
   $("#camera-select").replaceChildren(...r.cameras.map((c) =>
     el("option", { value: c.index, selected: c.index === r.active },
-      `${c.index}: ${c.model}${c.location !== null && c.location !== undefined ? ` (port ${c.location})` : ""}`
+      `${c.index}: ${c.model}${c.usb ? " (USB)" : c.location !== null && c.location !== undefined ? ` (port ${c.location})` : ""}`
       + (c.index === r.default ? " ★ default" : ""))));
   $("#btn-camera-default").disabled = r.active === r.default;
+  // Capture resolution: the sensor's modes (Pi cameras); full resolution by default.
+  const modes = info.sensor_modes || [];
+  $("#resolution-row").hidden = !modes.length;
+  const current = JSON.stringify(info.still_size || null);
+  $("#still-size").replaceChildren(el("option", { value: "null" }, "Full sensor resolution"),
+    ...modes.map((m) => el("option", { value: JSON.stringify(m.size), selected: JSON.stringify(m.size) === current },
+      `${m.size[0]}×${m.size[1]} (${(m.size[0] * m.size[1] / 1e6).toFixed(1)} MP)`)));
+  try {
+    const s = await api("/api/camera/sensor");
+    const [overlay, port] = (s.overlays[0] || "auto").split(",");
+    $("#sensor-select").value = overlay; $("#sensor-port").value = port || "";
+    $("#sensor-info").dataset.config = s.config;
+  } catch (_) { $("#btn-sensor-apply").disabled = true; }
 }
+$("#still-size").addEventListener("change", (e) => guarded(async () => {
+  await api("/api/settings", "POST", { camera: { still_size: JSON.parse(e.target.value) } });
+  info = await api("/api/camera_info");
+  $("#live").textContent = "Capture resolution saved — used from the next capture.";
+}, "#live"));
+$("#btn-camera-rescan").addEventListener("click", () => guarded(async () => {
+  if (!confirm("Restart the app to look for newly connected cameras?")) return;
+  $("#live").textContent = "Restarting to rescan cameras…";
+  await api("/api/system/restart", "POST", {});
+  const back = async () => { try { await api("/api/version"); location.reload(); } catch (_) { setTimeout(back, 2000); } };
+  setTimeout(back, 4000);
+}, "#live"));
+$("#btn-sensor-apply").addEventListener("click", () => guarded(async () => {
+  const sensor = $("#sensor-select").value, port = $("#sensor-port").value;
+  const label = $("#sensor-select").selectedOptions[0].textContent;
+  if (!confirm(`Set the camera sensor to “${label}” and reboot the Pi?
+
+config.txt is changed (a backup is kept).`)) return;
+  await api("/api/camera/sensor", "POST", { sensor, port });
+  await api("/api/system/reboot", "POST", {});
+  $("#live").textContent = "Rebooting with the new camera setting — the page reloads when the Pi is back…";
+  const back = async () => { try { await api("/api/version"); location.reload(); } catch (_) { setTimeout(back, 3000); } };
+  setTimeout(back, 30000);
+}, "#live"));
 $("#camera-select").addEventListener("change", (e) => guarded(async () => {
   $("#live").textContent = "Switching camera…";
   await api("/api/cameras", "POST", { index: parseInt(e.target.value, 10) });
