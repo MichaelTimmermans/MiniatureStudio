@@ -107,8 +107,10 @@ input.wide { flex: 1; min-width: 200px; }
 fieldset .row select { max-width: 100%; }
 ol { padding-left: 20px; }
 
-#busy-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, .55);
-  display: flex; align-items: center; justify-content: center; cursor: wait; }
+/* Covers only the preview (a full-page blocking layer looks like a "browser locker"
+   to security extensions); the capture buttons are disabled meanwhile. */
+#busy-overlay { position: absolute; inset: 0; z-index: 5; background: rgba(0, 0, 0, .55);
+  display: flex; align-items: center; justify-content: center; pointer-events: none; }
 .busy-box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
   padding: 20px 28px; text-align: center; min-width: 240px; }
 #busy-text { font-size: 18px; margin: 10px 0 4px; }

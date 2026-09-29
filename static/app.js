@@ -101,6 +101,7 @@ async function refreshStatus() {
   $("#btn-sweep").disabled = !!stack || status.recording.active;
   $("#btn-sweep-cancel").hidden = !(stack && stack.sweep);
   $("#btn-photo").disabled = status.recording.active;
+  if (isBusy()) CAPTURE_BUTTONS.forEach((s) => { $(s).disabled = true; });  // a capture is running
   if (stack?.sweep) showBusy(`Lens sweep: frame ${stack.count}/${stack.total}…`, "sweep");
   else hideBusy("sweep");
   $("#stack-status").textContent = stack
@@ -127,14 +128,19 @@ function uploadNote(r) { return r.uploads && r.uploads.length ? " — will uploa
 
 // Full-screen overlay while the camera is busy, so nothing gets clicked twice.
 const busyReasons = new Set();
+const CAPTURE_BUTTONS = ["#btn-photo", "#btn-stack-frame", "#btn-stack-start", "#btn-stack-end", "#btn-sweep", "#btn-video"];
 function showBusy(text, reason = "capture") {
   busyReasons.add(reason);
   $("#busy-text").textContent = text;
   $("#busy-overlay").hidden = false;
+  CAPTURE_BUTTONS.forEach((s) => { $(s).dataset.busy = "1"; $(s).disabled = true; });
 }
 function hideBusy(reason = "capture") {
   busyReasons.delete(reason);
-  if (!busyReasons.size) $("#busy-overlay").hidden = true;
+  if (busyReasons.size) return;
+  $("#busy-overlay").hidden = true;
+  CAPTURE_BUTTONS.forEach((s) => { delete $(s).dataset.busy; });
+  refreshStatus();  // restores the right enabled/disabled state
 }
 const isBusy = () => busyReasons.size > 0;
 

@@ -20,6 +20,13 @@
         <div id="grid-overlay" hidden></div>
         <div id="focus-marker" hidden></div>
         <canvas id="clip-overlay" hidden></canvas>
+        <div id="busy-overlay" hidden>
+          <div class="busy-box">
+            <div class="spinner"></div>
+            <div id="busy-text">Capturing…</div>
+            <div class="muted small">Hold still — saving continues in the background</div>
+          </div>
+        </div>
       </div>
       <div id="focus-check" class="panel" hidden>
         <img id="focus-crop" alt="Focus crop">
@@ -302,13 +309,6 @@
   </section>
 </main>
 
-<div id="busy-overlay" hidden>
-  <div class="busy-box">
-    <div class="spinner"></div>
-    <div id="busy-text">Capturing…</div>
-    <div class="muted small">Hold still — saving continues in the background</div>
-  </div>
-</div>
 
 <dialog id="viewer">
   <div class="viewer-bar">
