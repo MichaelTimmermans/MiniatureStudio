@@ -69,6 +69,15 @@ function renderBadges() {
   if (info.nas) b.append(el("span", { class: "badge ok" }, "NAS ✓"));
   if (info.has_autofocus) b.append(el("span", { class: "badge" }, "AF"));
   if (status.recording?.active) b.append(el("span", { class: "badge rec" }, "● REC"));
+  const writing = status.saving?.pending?.length || 0;
+  const compressing = status.compressing?.queued || 0;
+  if (writing || compressing) {
+    b.append(el("span", { class: "badge", title: "Background work — you can keep shooting" },
+      [writing ? `💾 writing ${writing}` : null, compressing ? `🗜 compressing ${compressing}` : null]
+        .filter(Boolean).join(" · ")));
+  }
+  const err = status.saving?.last_error || status.compressing?.last_error;
+  if (err) b.append(el("span", { class: "badge warn", title: err }, "save error"));
 }
 
 async function refreshStatus() {
@@ -80,6 +89,8 @@ async function refreshStatus() {
   $("#btn-sweep").disabled = !!stack || status.recording.active;
   $("#btn-sweep-cancel").hidden = !(stack && stack.sweep);
   $("#btn-photo").disabled = status.recording.active;
+  if (stack?.sweep) showBusy(`Lens sweep: frame ${stack.count}/${stack.total}…`, "sweep");
+  else hideBusy("sweep");
   $("#stack-status").textContent = stack
     ? `Stack ${stack.name}: ${stack.count}${stack.total ? "/" + stack.total : ""} frames${stack.sweep ? " (sweep running)" : ""}`
     : "";
@@ -100,15 +111,28 @@ async function updateNameExample() {
 }
 $("#label").addEventListener("input", updateNameExample);
 
-function uploadNote(r) { return r.uploads && r.uploads.length ? " — upload started" : ""; }
+function uploadNote(r) { return r.uploads && r.uploads.length ? " — will upload when saved" : ""; }
+
+// Full-screen overlay while the camera is busy, so nothing gets clicked twice.
+const busyReasons = new Set();
+function showBusy(text, reason = "capture") {
+  busyReasons.add(reason);
+  $("#busy-text").textContent = text;
+  $("#busy-overlay").hidden = false;
+}
+function hideBusy(reason = "capture") {
+  busyReasons.delete(reason);
+  if (!busyReasons.size) $("#busy-overlay").hidden = true;
+}
+const isBusy = () => busyReasons.size > 0;
 
 $("#btn-photo").addEventListener("click", () => guarded(async () => {
-  $("#btn-photo").disabled = true;
-  say("Taking photo…");
+  if (isBusy()) return;
+  showBusy("Capturing photo…");
   try {
     const r = await api("/api/capture", "POST", { label: label() });
-    say(`Saved: ${r.file} (${r.seconds}s)${uploadNote(r)}`);
-  } finally { $("#btn-photo").disabled = false; }
+    say(`Captured ${r.file} in ${r.seconds}s — saving in the background${uploadNote(r)}`);
+  } finally { hideBusy(); refreshStatus(); }
 }));
 
 $("#btn-stack-start").addEventListener("click", () => guarded(async () => {
@@ -119,14 +143,14 @@ $("#btn-stack-start").addEventListener("click", () => guarded(async () => {
 
 let frameBusy = false;
 async function stackFrame() {
-  if (frameBusy) return;
+  if (frameBusy || isBusy()) return;
   frameBusy = true;
+  showBusy(`Capturing frame ${(status.stack?.count || 0) + 1}…`);
   try {
-    say("Taking frame…");
     const r = await api("/api/stack/frame", "POST", {});
-    say(`Frame ${r.frame}: ${r.file} (${r.seconds}s)`);
+    say(`Frame ${r.frame} captured in ${r.seconds}s — adjust focus for the next one`);
   } catch (e) { say(e.message, true); }
-  finally { frameBusy = false; refreshStatus(); }
+  finally { frameBusy = false; hideBusy(); refreshStatus(); }
 }
 $("#btn-stack-frame").addEventListener("click", stackFrame);
 
@@ -254,6 +278,7 @@ $("#toggle-focus").addEventListener("change", (e) => {
   clearTimeout(focusTimer);
   sharpMax = 0;
   if (on) focusLoop();
+  else api("/api/focus_check/stop", "POST", {}).catch(() => {});  // back to the fast preview
 });
 async function focusLoop() {
   if (!$("#toggle-focus").checked) return;
@@ -436,12 +461,17 @@ setInterval(async () => {
 }, 2000);
 
 // ---------------------------------------------------------------- viewer
+const isTiff = (name) => /\.tiff?$/i.test(name);
 function openViewer(title, url, isVideo = false) {
   $("#viewer-title").textContent = title;
   $("#viewer-download").href = url + (url.includes("?") ? "&" : "?") + "download=1";
+  $("#viewer-download-png").hidden = !isTiff(title);
+  $("#viewer-download-png").href = url + "?as=png";
+  // Browsers cannot display TIFF: show a screen-sized JPEG preview instead.
+  const shown = isTiff(title) ? url.replace("/media/", "/thumb/") + "?size=large" : url;
   $("#viewer-body").replaceChildren(isVideo
     ? el("video", { src: url, controls: true, autoplay: true })
-    : el("a", { href: url, target: "_blank" }, el("img", { src: url, alt: title })));
+    : el("a", { href: shown, target: "_blank" }, el("img", { src: shown, alt: title })));
   $("#viewer").showModal();
 }
 $("#viewer-close").addEventListener("click", () => { $("#viewer").close(); $("#viewer-body").replaceChildren(); });
@@ -477,6 +507,7 @@ async function loadGallery() {
       el("figcaption", {}, el("div", { class: "small" }, f.name), el("div", { class: "muted small" }, `${f.modified.replace("T", " ")} · ${fmtBytes(f.size)}`)),
       el("div", { class: "row" },
         el("a", { class: "button", href: url + "?download=1" }, "Download"),
+        isTiff(f.name) ? el("a", { class: "button", href: url + "?as=png", title: "Compressed on the Pi first (~10-15 s on a Pi 3B)" }, "Download PNG") : null,
         uploadButtons("photo", f.name),
         deleteButton(`/api/photos/${enc(f.name)}`, f.name, loadGallery))));
   }
@@ -590,7 +621,7 @@ const FOCUS_STACK_FIELDS = {
   output_format: { label: "Output format", options: ["png", "jpg", "tif"] },
   consistency: { label: "Consistency (0-2)", type: "number" },
   denoise: { label: "Denoise", type: "number", step: "0.1" },
-  threads: { label: "Threads", type: "number" },
+  threads: { label: "Threads (empty = all CPU cores)", type: "number" },
   batchsize: { label: "Batch size (0 = all frames in one batch; Pi 3B: keep 4 because of RAM)", type: "number" },
   delete_frames: { label: "Delete source frames after a successful stack", type: "checkbox" },
   jpgquality: { label: "JPG quality", type: "number" },
@@ -627,11 +658,16 @@ const SETTINGS_SECTIONS = [
   ["Files", null, {
     filename_pattern: { label: "File name pattern ({dt:%Y%m%d_%H%M%S}, {label}, {seq:03d})", type: "text" },
     next_seq: { label: "Next {seq}", type: "number" },
-    image_format: { label: "Image format", options: ["png", "tif", "jpg"] },
+    image_format: { label: "Image format (tif = no compression work, ~1.8× larger; png = compressed in the background)", options: ["png", "tif", "jpg"] },
     png_compress_level: { label: "PNG compression (0-9, lossless; lower = faster)", type: "number" },
     jpeg_quality: { label: "JPG quality", type: "number" },
     save_metadata: { label: "Save metadata sidecar (.json)", type: "checkbox" },
     persist_controls: { label: "Remember camera controls after restart (when no boot preset is set)", type: "checkbox" },
+  }],
+  ["Performance", "camera", {
+    preview_mode: { label: "Live preview (fast = binned sensor mode, switches to full-res for each capture; full = always full-res, slower preview)", options: ["fast", "full"] },
+    save_queue: { label: "Frames waiting to be written (each ~36 MB RAM; Pi 3B: 2)", type: "number" },
+    compress_workers: { label: "Compression workers (0 = one per CPU core minus one; applies after restart)", type: "number" },
   }],
   ["Upload", "upload", {
     auto_drive: { label: "Upload to Google Drive automatically (when connected)", type: "checkbox" },

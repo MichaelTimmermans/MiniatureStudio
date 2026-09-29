@@ -110,7 +110,9 @@ def build_basename(label):
 def unique_stem(directory, stem, ext):
     """Never overwrite: append _2, _3, ... when the name is taken."""
     candidate, n = stem, 2
-    while (directory / f"{candidate}{ext}").exists() or (directory / candidate).exists():
+    while ((directory / f"{candidate}{ext}").exists() or (directory / candidate).exists()
+           or (directory / f"{candidate}.tif").exists()
+           or (save_queue and save_queue.is_pending(f"{candidate}{ext}"))):
         candidate = f"{stem}_{n}"
         n += 1
     return candidate
@@ -253,29 +255,69 @@ class RealCamera:
 
     def __init__(self, index=0, stream=None):
         from picamera2 import Picamera2
-        from picamera2.encoders import H264Encoder, MJPEGEncoder
         from picamera2.outputs import FfmpegOutput, FileOutput
 
-        self._H264Encoder, self._MJPEGEncoder = H264Encoder, MJPEGEncoder
         self._FfmpegOutput, self._FileOutput = FfmpegOutput, FileOutput
+        self._pick_encoders()
         self.index = index
         self.picam2 = Picamera2(index)
         self.model = self.picam2.camera_properties.get("Model", f"camera{index}")
         self.stream = stream or StreamingOutput()  # shared so open preview tabs survive a switch
         self.applied = {}
+        self.hold_full = False  # focus check wants real 100% crops
+        self.mode = None        # "preview" (binned, fast) or "full"
         self.start_still_mode()
 
+    def _pick_encoders(self):
+        """Pi 3/4 (VC4) have hardware MJPEG/H.264 encoders; the Pi 5 does not."""
+        from picamera2 import encoders
+
+        pisp = False
+        try:
+            from picamera2.platform import Platform, get_platform
+            pisp = get_platform() == Platform.PISP
+        except ImportError:
+            pass
+        if pisp:
+            self._make_preview_encoder = lambda: encoders.JpegEncoder(q=80)
+            libav = getattr(encoders, "LibavH264Encoder", None)
+            self._H264Encoder = libav or encoders.H264Encoder
+        else:
+            self._make_preview_encoder = encoders.MJPEGEncoder
+            self._H264Encoder = encoders.H264Encoder
+
     # -- modes --------------------------------------------------------------
-    def _still_config(self):
+    @property
+    def fast_preview(self):
+        return CONFIG["camera"].get("preview_mode", "fast") == "fast" and not self.hold_full
+
+    def _with_controls(self, cfg):
+        # Controls in the config apply from the very first frame after start().
+        cfg["controls"] = {**(cfg.get("controls") or {}), **self.applied}
+        return cfg
+
+    def _still_config(self, with_lores=True):
         cam = CONFIG["camera"]
         main_size = tuple(cam.get("still_size") or self.picam2.sensor_resolution)
-        return self.picam2.create_still_configuration(
+        extra = {"lores": {"size": tuple(cam["preview_size"]), "format": "YUV420"}} if with_lores else {}
+        return self._with_controls(self.picam2.create_still_configuration(
             main={"size": main_size, "format": "RGB888"},
-            lores={"size": tuple(cam["preview_size"]), "format": "YUV420"},
             display=None,
-            buffer_count=int(cam.get("buffer_count", 2)),
+            buffer_count=int(cam.get("buffer_count", 2)) if with_lores else 1,
             queue=False,  # captures always use a frame taken after the click
-        )
+            **extra,
+        ))
+
+    def _preview_config(self):
+        """Binned sensor mode (2028x1520 on the HQ camera): many more fps than full-res."""
+        w, h = self.picam2.sensor_resolution
+        binned = (w // 2 // 2 * 2, h // 2 // 2 * 2)
+        return self._with_controls(self.picam2.create_preview_configuration(
+            main={"size": tuple(CONFIG["camera"]["preview_size"]), "format": "YUV420"},
+            sensor={"output_size": binned},
+            display=None,
+            buffer_count=4,
+        ))
 
     def _apply_saved_controls(self):
         if self.applied:
@@ -285,10 +327,23 @@ class RealCamera:
                 log.warning("Could not re-apply controls: %s", exc)
 
     def start_still_mode(self):
-        self.picam2.configure(self._still_config())
-        self.picam2.start_encoder(self._MJPEGEncoder(), self._FileOutput(self.stream), name="lores")
+        """Idle mode with live preview: binned for speed, or full-res dual-stream."""
+        if self.fast_preview:
+            self.picam2.configure(self._preview_config())
+            stream_name, self.mode = "main", "preview"
+        else:
+            self.picam2.configure(self._still_config())
+            stream_name, self.mode = "lores", "full"
+        self.picam2.start_encoder(self._make_preview_encoder(), self._FileOutput(self.stream), name=stream_name)
         self.picam2.start()
         self._apply_saved_controls()
+
+    def set_hold_full(self, on):
+        if on != self.hold_full:
+            self.hold_full = on
+            if CONFIG["camera"].get("preview_mode", "fast") == "fast":
+                self.stop_all()
+                self.start_still_mode()
 
     def stop_all(self):
         self.picam2.stop_recording()  # stops every encoder and the camera
@@ -324,13 +379,29 @@ class RealCamera:
             log.warning("Resetting some controls failed: %s", exc)
 
     # -- capture ------------------------------------------------------------
-    def capture(self, path):
-        req = self.picam2.capture_request()
+    def grab(self):
+        """Take one full-resolution frame -> (PIL image, metadata). Saving happens elsewhere."""
+        switched = self.mode == "preview"
+        if switched:
+            # Preview runs binned: switch to the full sensor mode for this one frame.
+            self.stop_all()
+            self.picam2.configure(self._still_config(with_lores=False))
+            self.picam2.start()
         try:
-            image = req.make_image("main")  # copies the buffer
-            metadata = req.get_metadata()
+            req = self.picam2.capture_request()
+            try:
+                image = req.make_image("main")  # copies the buffer
+                metadata = req.get_metadata()
+            finally:
+                req.release()
         finally:
-            req.release()
+            if switched:
+                self.picam2.stop()
+                self.start_still_mode()
+        return image, metadata
+
+    def capture(self, path):
+        image, metadata = self.grab()
         save_image(image, path)
         return metadata
 
@@ -365,9 +436,10 @@ class RealCamera:
             path = directory / f"{stem}.h264"
             output = self._FileOutput(str(path))
         self.picam2.start_encoder(self._H264Encoder(bitrate=int(vid["bitrate"])), output, name="main")
-        self.picam2.start_encoder(self._MJPEGEncoder(), self._FileOutput(self.stream), name="lores")
+        self.picam2.start_encoder(self._make_preview_encoder(), self._FileOutput(self.stream), name="lores")
         self.picam2.start()
         self._apply_saved_controls()
+        self.mode = "video"
         return path
 
     def stop_video(self):
@@ -454,9 +526,20 @@ class DemoCamera:
     def reset_controls(self):
         self.applied = {}
 
+    mode = "preview"
+    hold_full = False
+
+    def set_hold_full(self, on):
+        pass
+
+    def grab(self):
+        time.sleep(0.6)  # roughly a real mode switch + exposure, so the UI overlay is visible
+        return self._render(self.sensor_resolution), self.metadata()
+
     def capture(self, path):
-        save_image(self._render(self.sensor_resolution), path)
-        return self.metadata()
+        image, metadata = self.grab()
+        save_image(image, path)
+        return metadata
 
     def capture_main_array(self):
         import numpy as np
@@ -479,13 +562,190 @@ class DemoCamera:
 
 
 def save_image(image, path):
+    """Write via a hidden temp name + rename, so nobody sees a half-written file."""
     ext = path.suffix.lower()
+    tmp = path.with_name(f".{path.name}.part")
     if ext == ".png":
-        image.save(path, compress_level=int(CONFIG.get("png_compress_level", 3)))
+        image.save(tmp, "PNG", compress_level=int(CONFIG.get("png_compress_level", 1)))
     elif ext in (".jpg", ".jpeg"):
-        image.convert("RGB").save(path, quality=int(CONFIG.get("jpeg_quality", 95)), subsampling=0)
+        image.convert("RGB").save(tmp, "JPEG", quality=int(CONFIG.get("jpeg_quality", 95)), subsampling=0)
     else:
-        image.save(path, compression="tiff_lzw")
+        image.save(tmp, "TIFF")  # uncompressed: the fastest lossless option on a slow Pi
+    os.replace(tmp, path)
+
+
+def raw_path_for(final_path):
+    """Stage-1 file: uncompressed TIFF next to where the final file will be."""
+    return final_path if final_path.suffix.lower() in (".tif", ".tiff") else final_path.with_suffix(".tif")
+
+
+class SaveQueue:
+    """Stage 1 of saving: write each grabbed frame to disk as uncompressed TIFF as
+    fast as the SD card allows, freeing its ~36 MB of RAM. Compression to the
+    configured format (PNG encoding a 12MP frame takes >10 s on a Pi 3B) happens
+    later in the Compressor. Bounded, so a burst of captures waits instead of
+    running out of memory."""
+
+    def __init__(self, maxsize):
+        import queue
+
+        self.queue = queue.Queue(maxsize=max(1, maxsize))
+        self.lock = threading.Lock()
+        self.pending = []  # final file names whose raw file is not on disk yet
+        self.last_error = None
+        threading.Thread(target=self._worker, daemon=True, name="raw-writer").start()
+
+    def put(self, image, path, metadata, extra=None, compress=True, upload=None):
+        """compress=False keeps the raw TIFF for now (stack frames: focus-stack reads
+        TIFF directly and the frames are usually deleted afterwards)."""
+        with self.lock:
+            self.pending.append(path.name)
+        self.queue.put((image, path, metadata, extra, compress, upload))
+
+    def _worker(self):
+        while True:
+            image, path, metadata, extra, compress, upload = self.queue.get()
+            started = time.time()
+            try:
+                raw = raw_path_for(path)
+                save_image(image, raw)
+                write_sidecar(path, metadata, extra)
+                log.info("raw %s written in %.1fs", raw.name, time.time() - started)
+                if raw == path:  # final format is TIFF: nothing left to do
+                    if upload:
+                        auto_upload(*upload)
+                elif compress:
+                    compressor.add(raw, path, upload)
+            except Exception as exc:
+                log.exception("Saving %s failed", path)
+                self.last_error = f"{path.name}: {exc}"
+            finally:
+                with self.lock:
+                    self.pending.remove(path.name)
+                self.queue.task_done()
+
+    def is_pending(self, name):
+        with self.lock:
+            return name in self.pending
+
+    def wait_idle(self):
+        self.queue.join()
+
+    def status(self):
+        with self.lock:
+            return {"pending": list(self.pending), "last_error": self.last_error}
+
+
+class Compressor:
+    """Stage 2: convert raw TIFFs to the final format in low-priority threads, one
+    per spare CPU core (Pillow releases the GIL while encoding). The work list is
+    kept on disk, so a restart or power cut resumes it."""
+
+    def __init__(self, state_file, workers=0):
+        self.state_file = state_file
+        self.lock = threading.Lock()
+        self.wake = threading.Condition(self.lock)
+        self.items = []  # {"raw", "final", "upload"}
+        self.busy = set()  # raw paths a worker is converting right now
+        self.last_error = None
+        try:
+            self.items = json.loads(state_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.items = []
+        # Leave one core for the camera, the web UI and the raw writer.
+        workers = workers or max(1, (os.cpu_count() or 2) - 1)
+        for n in range(workers):
+            threading.Thread(target=self._worker, daemon=True, name=f"compressor-{n}").start()
+
+    def _persist(self):
+        tmp = self.state_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.items), encoding="utf-8")
+        os.replace(tmp, self.state_file)
+
+    def add(self, raw, final, upload=None):
+        with self.lock:
+            if not any(i["raw"] == str(raw) for i in self.items):
+                self.items.append({"raw": str(raw), "final": str(final), "upload": upload})
+                self._persist()
+            self.wake.notify()
+
+    def add_stack(self, stack_dir, name):
+        """Queue a stack's raw frames (kept frames, or a stack finished unprocessed)."""
+        target = image_ext()
+        if target == ".tif":
+            return 0
+        frames = [f for f in stack_frames(stack_dir, name) if f.suffix.lower() in (".tif", ".tiff")]
+        for f in frames:
+            self.add(f, f.with_suffix(target))
+        return len(frames)
+
+    def _worker(self):
+        try:  # background work: yield the CPU to the camera, Flask and focus-stack
+            os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 15)
+        except (AttributeError, OSError):
+            pass
+        from PIL import Image
+
+        while True:
+            with self.lock:
+                while not (item := next((i for i in self.items if i["raw"] not in self.busy), None)):
+                    self.wake.wait()
+                self.busy.add(item["raw"])
+            raw, final = Path(item["raw"]), Path(item["final"])
+            started = time.time()
+            try:
+                if stack_busy(final.parent.name):
+                    # focus-stack is reading these frames; move to the back, retry later
+                    with self.lock:
+                        self.items.remove(item)
+                        self.items.append(item)
+                        self.busy.discard(item["raw"])
+                    time.sleep(5)
+                    continue
+                if raw.exists():
+                    with Image.open(raw) as img:
+                        img.load()
+                        save_image(img, final)
+                    raw.unlink()
+                    drop_thumb_for(raw)
+                    log.info("compressed %s in %.1fs", final.name, time.time() - started)
+                    if item.get("upload"):
+                        auto_upload(*item["upload"])
+            except Exception as exc:
+                log.exception("Compressing %s failed", raw)
+                self.last_error = f"{final.name}: {exc}"
+            with self.lock:
+                if item in self.items:
+                    self.items.remove(item)
+                self.busy.discard(item["raw"])
+                self._persist()
+
+    def status(self):
+        with self.lock:
+            return {"queued": len(self.items), "active": len(self.busy), "last_error": self.last_error}
+
+
+def stack_busy(name):
+    """A stack that is still being captured or processed must keep its raw frames."""
+    if active_stack and active_stack["name"] == name:
+        return True
+    job = latest_job("focus-stack", name)
+    return bool(job and job["status"] in ("queued", "running"))
+
+
+def drop_thumb_for(path):
+    """Remove a cached thumbnail of a file inside photos/ or stacks/."""
+    for kind in ("photos", "stacks"):
+        base = data_dir(kind)
+        try:
+            rel = path.resolve().relative_to(base.resolve()).as_posix()
+        except ValueError:
+            continue
+        drop_thumb(kind, rel)
+
+
+save_queue = None  # created in main() (queue size comes from the config)
+compressor = None
 
 
 def demo_mode():
@@ -645,12 +905,12 @@ def focus_stack_version(binary):
 
 def stack_frames(stack_dir, name):
     pattern = re.compile(rf"^{re.escape(name)}_(\d+)(\.[A-Za-z]+)$")
-    frames = []
+    frames = {}
     for f in stack_dir.iterdir():
         m = pattern.match(f.name)
         if m and m.group(2).lower() in IMAGE_EXTS:
-            frames.append((int(m.group(1)), f))
-    return [f for _, f in sorted(frames)]
+            frames.setdefault(int(m.group(1)), f)  # raw + compressed may briefly coexist
+    return [frames[n] for n in sorted(frames)]
 
 
 def stack_outputs(stack_dir, name):
@@ -707,6 +967,10 @@ def run_focus_stack(job, name, overrides):
     if not binary:
         raise RuntimeError("focus-stack binary not found — run ./install.sh (builds vendor/focus-stack)")
     stack_dir = safe_child(data_dir("stacks"), name)
+    waiting = len(save_queue.status()["pending"])
+    if waiting:
+        job_log(job, f"Waiting for {waiting} frame(s) to be written…")
+    save_queue.wait_idle()
     frames = stack_frames(stack_dir, name)
     if len(frames) < 2:
         raise RuntimeError(f"Need at least 2 frames, found {len(frames)}")
@@ -740,6 +1004,10 @@ def run_focus_stack(job, name, overrides):
             return result
         result["deleted_frames"] = delete_stack_frames(stack_dir, name)
         job_log(job, f"Deleted {result['deleted_frames']} source frames")
+    else:
+        queued = compressor.add_stack(stack_dir, name)
+        if queued:
+            job_log(job, f"Queued {queued} kept frames for compression")
     result["uploads"] = auto_upload("stack", name)
     return result
 
@@ -749,7 +1017,7 @@ def delete_stack_frames(stack_dir, name):
     for f in frames:
         f.unlink()
         f.with_suffix(".json").unlink(missing_ok=True)
-        (stack_dir.parent / ".thumbs" / f"{name}__{f.name}.jpg").unlink(missing_ok=True)
+        drop_thumb("stacks", f"{name}/{f.name}")
     return len(frames)
 
 
@@ -886,8 +1154,9 @@ def run_sweep(job, name, positions, settle_ms, process):
                 camera.set_controls({"LensPosition": float(pos)})
                 time.sleep(settle_ms / 1000)
                 path = stack_dir / f"{name}_{n}{image_ext()}"
-                metadata = camera.capture(path)
-            write_sidecar(path, metadata, {"stack": name, "frame": n, "lens_position_target": pos})
+                image, metadata = camera.grab()
+            save_queue.put(image, path, metadata, {"stack": name, "frame": n, "lens_position_target": pos},
+                           compress=False)
             with state_lock:
                 active_stack["count"] = n
             job_log(job, f"frame {n}/{len(positions)} @ LensPosition {pos} "
@@ -939,6 +1208,16 @@ def media(kind, relpath):
     path = safe_child(data_dir(kind), relpath)
     if not path.is_file():
         abort(404)
+    if request.args.get("as") == "png" and path.suffix.lower() in (".tif", ".tiff"):
+        # Compress on download (TIFF storage mode). Takes ~10-15 s on a Pi 3B.
+        from PIL import Image
+
+        buf = io.BytesIO()
+        with Image.open(path) as img:
+            img.save(buf, "PNG", compress_level=int(CONFIG.get("png_compress_level", 3)))
+        buf.seek(0)
+        return send_file(buf, mimetype="image/png", as_attachment=True,
+                         download_name=path.with_suffix(".png").name)
     return send_file(path, as_attachment=request.args.get("download") == "1")
 
 
@@ -983,15 +1262,18 @@ def thumb(kind, relpath):
     src = safe_child(base, relpath)
     if src.suffix.lower() not in IMAGE_EXTS:
         abort(404)
-    cache = base / ".thumbs" / (relpath.replace("/", "__") + ".jpg")
+    # size=large: a screen-sized JPEG for the viewer (browsers cannot show TIFF).
+    large = request.args.get("size") == "large"
+    box = (2048, 1536) if large else (480, 360)
+    cache = base / ".thumbs" / (relpath.replace("/", "__") + (".large.jpg" if large else ".jpg"))
     if not cache.exists() or cache.stat().st_mtime < src.stat().st_mtime:
         from PIL import Image
         cache.parent.mkdir(exist_ok=True)
         with Image.open(src) as img:
-            img.draft("RGB", (480, 360))
+            img.draft("RGB", box)
             img = img.convert("RGB")
-            img.thumbnail((480, 360))
-            img.save(cache, "JPEG", quality=80)
+            img.thumbnail(box)
+            img.save(cache, "JPEG", quality=88 if large else 80)
     return send_file(cache, max_age=3600)
 
 
@@ -1166,7 +1448,9 @@ def api_status():
     with state_lock:
         stack = dict(active_stack, dir=None) if active_stack else None
         rec = dict(recording, path=recording["path"] and Path(recording["path"]).name)
-    return jsonify(recording=rec, stack=stack, next_seq=CONFIG.get("next_seq", 1))
+    return jsonify(recording=rec, stack=stack, next_seq=CONFIG.get("next_seq", 1),
+                   saving=save_queue.status(), compressing=compressor.status(),
+                   preview_mode=getattr(camera, "mode", None))
 
 
 @app.route("/api/autofocus/trigger", methods=["POST"])
@@ -1195,7 +1479,10 @@ def api_focus_check():
     x = min(max(float(request.args.get("x", 0.5)), 0.0), 1.0)
     y = min(max(float(request.args.get("y", 0.5)), 0.0), 1.0)
     size = int(request.args.get("size", 600))
+    focus_hold["last"] = time.time()
     with camera_lock:
+        if camera.mode == "preview":
+            camera.set_hold_full(True)  # real 100% crops need the full sensor mode
         frame = camera.capture_main_array()
     h, w = frame.shape[:2]
     cw, ch = min(size, w), min(int(size * 0.75), h)
@@ -1211,6 +1498,34 @@ def api_focus_check():
                     headers={"X-Sharpness": f"{score:.1f}", "Cache-Control": "no-store"})
 
 
+focus_hold = {"last": 0.0}
+FOCUS_HOLD_SECONDS = 20
+
+
+@app.route("/api/focus_check/stop", methods=["POST"])
+def api_focus_check_stop():
+    """Back to the fast binned preview (also happens automatically after 20 s)."""
+    focus_hold["last"] = 0.0
+    release_focus_hold()
+    return jsonify(ok=True)
+
+
+def release_focus_hold():
+    if camera.hold_full and not recording["active"]:
+        with camera_lock:
+            camera.set_hold_full(False)
+
+
+def focus_hold_watchdog():
+    while True:
+        time.sleep(5)
+        if camera and camera.hold_full and time.time() - focus_hold["last"] > FOCUS_HOLD_SECONDS:
+            try:
+                release_focus_hold()
+            except Exception:
+                log.exception("Leaving full-res focus mode failed")
+
+
 @app.route("/api/capture", methods=["POST"])
 def api_capture():
     if recording["active"]:
@@ -1221,10 +1536,13 @@ def api_capture():
     path = directory / f"{stem}{ext}"
     started = time.time()
     with camera_lock:
-        metadata = camera.capture(path)
-    write_sidecar(path, metadata, {"label": label})
-    uploads = auto_upload("photo", path.name)
-    return jsonify(ok=True, file=path.name, seconds=round(time.time() - started, 2), uploads=uploads)
+        image, metadata = camera.grab()
+    grabbed = time.time() - started
+    # Encoding + upload run in the background; auto-upload starts once the file exists.
+    save_queue.put(image, path, metadata, {"label": label}, upload=("photo", path.name))
+    log.info("photo %s: grab %.1fs, queued after %.1fs", path.name, grabbed, time.time() - started)
+    return jsonify(ok=True, file=path.name, seconds=round(grabbed, 2), saving=True,
+                   uploads=["queued"] if auto_upload_dests() else [])
 
 
 @app.route("/api/video/start", methods=["POST"])
@@ -1303,13 +1621,14 @@ def api_stack_frame():
     started = time.time()
     try:
         with camera_lock:
-            metadata = camera.capture(path)
+            image, metadata = camera.grab()
     except Exception:
         with state_lock:
             active_stack["count"] -= 1
         raise
-    write_sidecar(path, metadata, {"stack": name, "frame": n})
-    return jsonify(ok=True, name=name, frame=n, file=path.name, seconds=round(time.time() - started, 2))
+    grabbed = time.time() - started
+    save_queue.put(image, path, metadata, {"stack": name, "frame": n}, compress=False)
+    return jsonify(ok=True, name=name, frame=n, file=path.name, seconds=round(grabbed, 2), saving=True)
 
 
 @app.route("/api/stack/end", methods=["POST"])
@@ -1326,8 +1645,13 @@ def api_stack_end():
     # AF cameras always auto-stack; manual-focus rigs decide per stack.
     if (body.get("process") or camera.has_autofocus) and finished["count"] >= 2:
         job = start_job("focus-stack", finished["name"], run_focus_stack, finished["name"], None)
-    elif CONFIG["upload"].get("stack_frames") and finished["count"]:
-        uploads = auto_upload("stack", finished["name"])  # processed stacks upload after processing
+    elif finished["count"]:
+        def compress_then_upload(name=finished["name"], stack_dir=Path(finished["dir"])):
+            save_queue.wait_idle()
+            compressor.add_stack(stack_dir, name)
+            if CONFIG["upload"].get("stack_frames"):
+                auto_upload("stack", name)  # processed stacks upload after processing
+        threading.Thread(target=compress_then_upload, daemon=True).start()
     return jsonify(ok=True, name=finished["name"], frames=finished["count"],
                    job=job and job["id"], uploads=uploads)
 
@@ -1453,8 +1777,9 @@ def api_videos():
 
 
 def drop_thumb(kind, relpath):
-    cache = data_dir(kind) / ".thumbs" / (relpath.replace("/", "__") + ".jpg")
-    cache.unlink(missing_ok=True)
+    stem = relpath.replace("/", "__")
+    for suffix in (".jpg", ".large.jpg"):
+        (data_dir(kind) / ".thumbs" / (stem + suffix)).unlink(missing_ok=True)
 
 
 @app.route("/api/photos/<name>", methods=["DELETE"])
@@ -1868,8 +2193,12 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if args.demo:
         os.environ["MINIATURESTUDIO_DEMO"] = "1"
+    global save_queue, compressor
+    save_queue = SaveQueue(int(CONFIG["camera"].get("save_queue", 2)))
+    compressor = Compressor(BASE_DIR / ".compress_queue.json", int(CONFIG["camera"].get("compress_workers", 0)))
     camera = open_camera()
     atexit.register(lambda: camera.close())
+    threading.Thread(target=focus_hold_watchdog, daemon=True).start()
     restore_controls(camera)
     binary = find_focus_stack()
     log.info("focus-stack: %s", binary or "NOT FOUND (run ./install.sh)")

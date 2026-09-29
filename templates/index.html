@@ -203,11 +203,20 @@
   </section>
 </main>
 
+<div id="busy-overlay" hidden>
+  <div class="busy-box">
+    <div class="spinner"></div>
+    <div id="busy-text">Capturing…</div>
+    <div class="muted small">Hold still — saving continues in the background</div>
+  </div>
+</div>
+
 <dialog id="viewer">
   <div class="viewer-bar">
     <span id="viewer-title"></span>
     <span>
       <a id="viewer-download" download>Download</a>
+      <a id="viewer-download-png" download hidden title="Compresses on the Pi first (~10-15 s on a Pi 3B)">Download PNG</a>
       <button id="viewer-close">Close</button>
     </span>
   </div>

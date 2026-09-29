@@ -7,3 +7,5 @@ __pycache__/
 *.pyc
 .venv/
 CLAUDE.md
+.compress_queue.json
+.compress_queue.tmp

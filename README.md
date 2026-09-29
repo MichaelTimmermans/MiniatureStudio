@@ -81,6 +81,23 @@ run in the **Stacks** tab.
 - Pi 3B tip: enlarge swap (`sudo nano /etc/dphys-swapfile`,
   `CONF_SWAPSIZE=2048`) if focus-stack gets killed for lack of memory.
 
+## Speed
+
+Only the capture itself happens while you wait (about a second); everything
+else runs in the background:
+
+1. **Live preview** uses the fast binned sensor mode and switches to full
+   resolution just for the capture (Settings → Performance → `fast`). The focus
+   check switches to full resolution while it is on, and back 20 s after.
+2. **Raw write**: the frame is written to disk as uncompressed TIFF right away.
+3. **Compression** to PNG runs in low-priority workers, one per spare CPU core.
+   Stack frames are never compressed if they are deleted after stacking —
+   focus-stack reads the TIFFs directly.
+
+The header shows what is still being written or compressed. Set the image
+format to `tif` to skip compression entirely (files ~1.8× larger); TIFF files
+then get a **Download PNG** button that compresses on download.
+
 ## Jobs
 
 Long tasks run in the background so you can keep shooting: focus-stack
