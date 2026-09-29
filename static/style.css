@@ -143,21 +143,28 @@ ol { padding-left: 20px; }
 .control .pin.on { color: var(--warn); }
 #quick-controls:empty::after { content: "No pinned controls — pin some with ☆ under All controls."; color: var(--muted); font-size: 12px; }
 
-/* Studio column: compact preview with histogram, focus check and quick controls beside/below it. */
-#preview-wrap { width: fit-content; max-width: 100%; margin: 0 auto; }
-#preview { max-height: 48vh; width: auto; max-width: 100%; }
-.toolbar { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; margin: 6px 0; }
-.analysis { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
-.analysis .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px; min-width: 0; }
-.analysis .panel[hidden] { display: none; }
-#histogram { height: 110px; }
-#focus-check img { max-height: 180px; width: 100%; object-fit: contain; margin: 0 0 4px; }
-#quick-box { margin-top: 8px; }
-#quick-box .control { grid-template-columns: 9.5em minmax(0, 1fr) auto auto; padding: 2px 0; font-size: 12px; }
-#quick-box .numctl .num { width: 6em; }
-#quick-box select { padding: 3px 6px; }
-@media (min-width: 1700px) { #quick-controls { display: grid; grid-template-columns: 1fr 1fr; column-gap: 18px; } }
+/* Studio: column 1 = preview (+ focus detail), column 2 = view options + histogram,
+   together as wide as the old left column; column 3 = the tabs. */
+.studio { display: grid; grid-template-columns: minmax(0, 3fr) minmax(170px, 1.3fr); gap: 12px; align-items: start; }
+.studio-main, .studio-side { min-width: 0; }
+#preview-wrap { width: 100%; }
+#preview { width: 100%; height: auto; max-height: 62vh; object-fit: contain; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px; margin-top: 8px; }
+.panel[hidden] { display: none; }
+.toolbar { display: flex; flex-direction: column; gap: 6px; padding: 8px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 6px; }
+#histogram { width: 100%; height: 150px; display: block; }
+#focus-check img { width: 100%; max-height: 34vh; object-fit: contain; display: block; margin-bottom: 4px; }
+@media (max-width: 1100px) { .studio { grid-template-columns: 1fr; } .toolbar { flex-direction: row; flex-wrap: wrap; } }
 
-pre.log.log-big { max-height: 420px; min-height: 120px; font-size: 11px; line-height: 1.35; }
-pre.log .lvl-error { color: var(--danger); }
-pre.log .lvl-warn { color: var(--warn); }
+.numctl .step { padding: 2px 9px; min-width: 30px; font-size: 16px; line-height: 1; touch-action: manipulation; user-select: none; }
+/* Touch screens: bigger targets for fingers. */
+@media (pointer: coarse) {
+  .numctl .step { min-width: 42px; min-height: 40px; font-size: 20px; }
+  .numctl input[type=range] { height: 32px; }
+  .numctl .num { min-height: 38px; width: 5.5em; }
+  .control { grid-template-columns: 1fr auto auto; row-gap: 4px; }
+  .control > label { grid-column: 1 / -1; font-size: 13px; }
+  .control .numctl, .control .array, .control select { grid-column: 1 / 2; }
+  button, .button, select { min-height: 38px; }
+}

@@ -339,7 +339,8 @@ function numberInput(c, value, onChange, idx) {
   const range = el("input", { type: "range",
     min: toSlider(Math.max(min, logScale ? 1 : min)), max: toSlider(max),
     step: logScale ? 0.001 : (isFloat ? (max - min) / 1000 : 1) });
-  const num = el("input", { type: "number", step: isFloat ? "any" : 1, min, max, class: "num" });
+  const num = el("input", { type: "number", step: isFloat ? "any" : 1, min, max, class: "num",
+    inputmode: isFloat ? "decimal" : "numeric" });
   const set = (v) => { if (v === null || v === undefined) return; num.value = isFloat ? +(+v).toFixed(4) : Math.round(v); range.value = toSlider(+v); };
   set(value);
   range.addEventListener("input", () => {
@@ -348,7 +349,40 @@ function numberInput(c, value, onChange, idx) {
     onChange(isFloat ? v : Math.round(v), idx);
   });
   num.addEventListener("change", () => { set(parseFloat(num.value)); onChange(parseFloat(num.value), idx); });
-  return el("span", { class: "numctl" }, range, num);
+  // − / + fine-tune buttons (precise on touch screens): relative steps on log ranges
+  // (ExposureTime), otherwise 1/200 of the range, or 1 for whole numbers. Hold to repeat.
+  const nudge = (dir) => {
+    let v = parseFloat(num.value);
+    if (isNaN(v)) v = Math.max(min, logScale ? 1 : min);
+    if (logScale) v = dir > 0 ? Math.max(v * 1.05, v + 1) : Math.min(v / 1.05, v - 1);
+    else v += dir * (isFloat ? niceStep((max - min) / 200) : Math.max(1, Math.round((max - min) / 200)));
+    v = Math.min(max, Math.max(min, v));
+    if (!isFloat) v = Math.round(v); else v = +v.toFixed(4);
+    set(v);
+    onChange(v, idx);
+  };
+  const stepButton = (dir, text) => {
+    const b = el("button", { class: "step", type: "button", title: dir > 0 ? "Increase (hold to repeat)" : "Decrease (hold to repeat)" }, text);
+    let timer = null, delay = 400;
+    const stop = () => { clearTimeout(timer); timer = null; delay = 400; };
+    const repeat = () => { nudge(dir); delay = Math.max(60, delay * 0.8); timer = setTimeout(repeat, delay); };
+    b.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      try { b.setPointerCapture(e.pointerId); } catch (_) { /* not all pointers can be captured */ }
+      repeat();
+    });
+    ["pointerup", "pointercancel", "pointerleave"].forEach((ev) => b.addEventListener(ev, stop));
+    b.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); nudge(dir); } });
+    return b;
+  };
+  return el("span", { class: "numctl" }, stepButton(-1, "−"), range, stepButton(1, "+"), num);
+}
+
+// 0.0137 -> 0.01, 0.37 -> 0.5: round a step to 1, 2 or 5 times a power of ten.
+function niceStep(x) {
+  const p = Math.pow(10, Math.floor(Math.log10(x)));
+  const f = x / p;
+  return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p;
 }
 
 function controlRow(c) {
@@ -371,7 +405,7 @@ function controlRow(c) {
   const reset = el("button", { class: "tiny", title: `default: ${JSON.stringify(c.default)}`,
     onclick: () => { if (c.default !== null) { queueControl(c.name, c.default); setTimeout(loadControls, 600); } } }, "↺");
   const pinned = pinnedControls().includes(c.name);
-  const pin = el("button", { class: "pin" + (pinned ? " on" : ""), title: pinned ? "Unpin from Quick controls" : "Pin to Quick controls",
+  const pin = el("button", { class: "pin" + (pinned ? " on" : ""), title: pinned ? "Remove from Most used" : "Add to Most used",
     onclick: () => togglePin(c.name) }, pinned ? "★" : "☆");
   const unit = CONTROL_UNITS[c.name];
   return el("div", { class: "control", "data-name": c.name.toLowerCase() },
@@ -534,7 +568,7 @@ $("#btn-af").addEventListener("click", () => guarded(async () => {
   $("#live").textContent = `Autofocus ${r.ok ? "succeeded" : "failed"} — LensPosition ${r.lens_position}`;
 }, "#live"));
 setInterval(async () => {
-  if (document.hidden) return;
+  if ($("#tab-controls").hidden || document.hidden) return;
   try { renderLive((await api("/api/controls")).live); } catch (_) { /* ignore */ }
 }, 2000);
 
@@ -1220,7 +1254,6 @@ function restoreView() {
     ["#sweep-start", "#sweep-end"].forEach((s) => { $(s).min = lo; $(s).max = hi; });
   }
   await guarded(loadSettings);
-  loadControls().catch(() => {});
   restoreView();
   loadVersion();
   refreshStatus();

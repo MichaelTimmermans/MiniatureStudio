@@ -13,41 +13,31 @@
 </header>
 
 <main>
-  <section id="preview-pane">
-    <div id="preview-wrap">
-      <img id="preview" src="/stream.mjpg" alt="Live preview">
-      <div id="grid-overlay" hidden></div>
-      <div id="focus-marker" hidden></div>
-      <canvas id="clip-overlay" hidden></canvas>
-    </div>
-    <div class="toolbar small">
-      <label><input type="checkbox" id="toggle-grid"> Grid</label>
-      <label><input type="checkbox" id="toggle-focus"> Focus check</label>
-      <label><input type="checkbox" id="toggle-histogram"> Histogram</label>
-      <label><input type="checkbox" id="toggle-clipping"> Clipping</label>
-      <span class="muted">click the preview to set the focus point</span>
-    </div>
-    <div class="analysis">
-      <div id="histogram-box" class="panel" hidden>
-        <canvas id="histogram" width="512" height="140"></canvas>
-        <div class="small" id="histogram-info"></div>
+  <section id="preview-pane" class="studio">
+    <div class="studio-main">
+      <div id="preview-wrap">
+        <img id="preview" src="/stream.mjpg" alt="Live preview">
+        <div id="grid-overlay" hidden></div>
+        <div id="focus-marker" hidden></div>
+        <canvas id="clip-overlay" hidden></canvas>
       </div>
       <div id="focus-check" class="panel" hidden>
         <img id="focus-crop" alt="Focus crop">
-        <div class="small">Sharpness <strong id="sharpness">–</strong> <span class="muted">· best <span id="sharpness-max">–</span></span></div>
+        <div class="small">Sharpness <strong id="sharpness">–</strong> <span class="muted">· best <span id="sharpness-max">–</span> · click the preview to move the focus point</span></div>
       </div>
     </div>
-    <fieldset id="quick-box">
-      <legend>Quick controls</legend>
-      <div id="quick-controls"></div>
-      <div class="row">
-        <button id="btn-af" hidden>Autofocus</button>
-        <button id="btn-lock-exposure" title="Keep the current auto exposure and white balance as fixed manual values">Lock exposure &amp; WB</button>
-        <button id="btn-controls-reset">Reset all</button>
+    <div class="studio-side">
+      <div class="toolbar small">
+        <label><input type="checkbox" id="toggle-grid"> Grid</label>
+        <label><input type="checkbox" id="toggle-focus"> Focus check</label>
+        <label><input type="checkbox" id="toggle-histogram"> Histogram</label>
+        <label><input type="checkbox" id="toggle-clipping"> Clipping</label>
       </div>
-      <div id="live" class="small"></div>
-      <div class="muted small">Pin or unpin controls with ☆ under Camera → All controls.</div>
-    </fieldset>
+      <div id="histogram-box" class="panel" hidden>
+        <canvas id="histogram" width="512" height="200"></canvas>
+        <div class="small" id="histogram-info"></div>
+      </div>
+    </div>
   </section>
 
   <section id="side">
@@ -109,6 +99,17 @@
 
     <!-- Camera -->
     <div class="tab" id="tab-controls" hidden>
+      <fieldset>
+        <legend>Most used</legend>
+        <div id="quick-controls"></div>
+        <div class="row">
+          <button id="btn-af" hidden>Autofocus</button>
+          <button id="btn-lock-exposure" title="Keep the current auto exposure and white balance as fixed manual values">Lock exposure &amp; WB</button>
+          <button id="btn-controls-reset">Reset all</button>
+        </div>
+        <div id="live" class="small"></div>
+        <div class="muted small">★ marks a control as most used; ☆ under All controls adds one here.</div>
+      </fieldset>
       <fieldset>
         <legend>Presets for <span id="preset-model"></span></legend>
         <div class="row">
