@@ -142,6 +142,22 @@
     <!-- Settings -->
     <div class="tab" id="tab-settings" hidden>
       <fieldset>
+        <legend>Storage</legend>
+        <div class="row"><span id="storage-status">–</span></div>
+        <div id="usb-disks"></div>
+        <div class="row">
+          <button id="btn-storage-refresh">Look for USB disks</button>
+          <button id="btn-storage-eject" hidden>Safely remove USB disk</button>
+          <button id="btn-storage-sd" hidden>Back to SD card</button>
+          <button id="btn-storage-forget" class="danger" hidden>Forget USB disk</button>
+        </div>
+        <div class="muted small">Photos, stacks and videos go to a <code>MiniatureStudio</code> folder on the disk.
+          ext4, exFAT, FAT32 and NTFS work; the disk is mounted again at every boot and when you replug it.
+          A USB SSD is fastest and wears least.</div>
+        <div id="storage-message" class="status small"></div>
+      </fieldset>
+
+      <fieldset>
         <legend>Google Drive</legend>
         <div class="row"><span id="drive-status">–</span></div>
         <div class="row">

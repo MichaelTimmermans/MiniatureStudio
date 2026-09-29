@@ -8,6 +8,9 @@
     "stacks": "stacks",
     "videos": "videos"
   },
+  "storage": {
+    "target": "sd"
+  },
   "filename_pattern": "{dt:%Y%m%d_%H%M%S}_{label}",
   "next_seq": 1,
   "image_format": "png",

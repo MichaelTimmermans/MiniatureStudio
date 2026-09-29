@@ -70,10 +70,42 @@ def save_config():
         os.replace(tmp, CONFIG_PATH)
 
 
-def data_dir(key):
+USB_MOUNT = Path("/mnt/miniaturestudio-usb")  # managed by scripts/miniaturestudio-mount
+DATA_KINDS = ("photos", "stacks", "videos")
+
+
+class StorageUnavailable(RuntimeError):
+    """The selected storage (USB disk) is not connected."""
+
+
+_usb_remount = {"at": 0.0}
+
+
+def usb_root(try_remount=True):
+    """Data folder on the USB disk; re-mounts it once when it was replugged."""
+    if not os.path.ismount(USB_MOUNT) and try_remount and time.time() - _usb_remount["at"] > 10:
+        _usb_remount["at"] = time.time()
+        try:
+            run_mount_helper("usb-remount")
+        except Exception as exc:
+            log.info("USB remount: %s", exc)
+    if not os.path.ismount(USB_MOUNT):
+        raise StorageUnavailable("USB disk not connected — plug it in, or switch back to the SD card "
+                                 "under Settings → Storage")
+    return USB_MOUNT / "MiniatureStudio"
+
+
+def sd_dir(key):
     path = Path(CONFIG["paths"][key])
-    if not path.is_absolute():
-        path = BASE_DIR / path
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+def storage_target():
+    return CONFIG.get("storage", {}).get("target", "sd")
+
+
+def data_dir(key):
+    path = usb_root() / key if storage_target() == "usb" else sd_dir(key)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -736,10 +768,10 @@ def stack_busy(name):
 def drop_thumb_for(path):
     """Remove a cached thumbnail of a file inside photos/ or stacks/."""
     for kind in ("photos", "stacks"):
-        base = data_dir(kind)
         try:
+            base = data_dir(kind)
             rel = path.resolve().relative_to(base.resolve()).as_posix()
-        except ValueError:
+        except (ValueError, StorageUnavailable):
             continue
         drop_thumb(kind, rel)
 
@@ -1450,6 +1482,9 @@ def api_status():
         rec = dict(recording, path=recording["path"] and Path(recording["path"]).name)
     return jsonify(recording=rec, stack=stack, next_seq=CONFIG.get("next_seq", 1),
                    saving=save_queue.status(), compressing=compressor.status(),
+                   storage={"target": storage_target(),
+                            "available": storage_target() != "usb" or os.path.ismount(USB_MOUNT),
+                            "label": CONFIG.get("storage", {}).get("label")},
                    preview_mode=getattr(camera, "mode", None))
 
 
@@ -2113,6 +2148,205 @@ def api_nas_unmount():
 
 
 # --------------------------------------------------------------------------
+# Routes — storage: SD card or a USB disk (saves wear on the SD card)
+# --------------------------------------------------------------------------
+
+USB_FSTYPES = {"ext4", "vfat", "exfat", "ntfs"}
+
+
+def list_usb_disks():
+    """USB partitions with a filesystem (lsblk works without root)."""
+    try:
+        out = subprocess.run(["lsblk", "-J", "-b", "-o",
+                              "NAME,PATH,LABEL,FSTYPE,SIZE,FSAVAIL,MOUNTPOINT,TRAN,UUID,MODEL,TYPE"],
+                             capture_output=True, text=True, timeout=10)
+        devices = json.loads(out.stdout or "{}").get("blockdevices", [])
+    except Exception:
+        return []
+    disks = []
+    for dev in devices:
+        if dev.get("tran") != "usb":
+            continue
+        for part in dev.get("children") or [dev]:
+            if not part.get("fstype") or part.get("mountpoint") in ("/", "/boot", "/boot/firmware"):
+                continue
+            disks.append({
+                "path": part.get("path"), "uuid": part.get("uuid"), "label": part.get("label"),
+                "fstype": part.get("fstype"), "size": int(part.get("size") or 0),
+                "model": (dev.get("model") or "").strip(), "mountpoint": part.get("mountpoint"),
+                "supported": part.get("fstype") in USB_FSTYPES and bool(part.get("uuid")),
+            })
+    return disks
+
+
+def disk_free(path):
+    try:
+        usage = shutil.disk_usage(path)
+        return {"total": usage.total, "free": usage.free}
+    except OSError:
+        return None
+
+
+def data_size(root_for_kind):
+    """(files, bytes) of the photo/stack/video folders; root_for_kind(kind) -> Path."""
+    files = size = 0
+    for kind in DATA_KINDS:
+        base = root_for_kind(kind)
+        if not base.is_dir():
+            continue
+        for f in base.rglob("*"):
+            if f.is_file() and ".thumbs" not in f.parts and ".tmp" not in f.parts:
+                files += 1
+                size += f.stat().st_size
+    return files, size
+
+
+def storage_busy():
+    with state_lock:
+        if recording["active"] or active_stack:
+            return "stop recording / finish the stack first"
+    if save_queue.status()["pending"]:
+        return "wait until the last captures are written"
+    with jobs_lock:
+        if any(j["status"] in ("queued", "running") and j["kind"] in ("focus-stack", "move")
+               for j in jobs.values()):
+            return "wait until stack processing / moving has finished"
+    return None
+
+
+@app.route("/api/storage")
+def api_storage():
+    try:
+        usb = run_mount_helper("usb-status")
+    except Exception as exc:
+        usb = {"configured": False, "mounted": False, "error": str(exc)}
+    mounted = os.path.ismount(USB_MOUNT)
+    sd_files, sd_bytes = data_size(sd_dir)
+    usb_files = usb_bytes = 0
+    if mounted:
+        usb_files, usb_bytes = data_size(lambda k: USB_MOUNT / "MiniatureStudio" / k)
+    return jsonify(ok=True, target=storage_target(), usb=usb, usb_mounted=mounted,
+                   disks=list_usb_disks(),
+                   free={"sd": disk_free(BASE_DIR), "usb": disk_free(USB_MOUNT) if mounted else None},
+                   data={"sd": {"files": sd_files, "bytes": sd_bytes},
+                         "usb": {"files": usb_files, "bytes": usb_bytes}})
+
+
+@app.route("/api/storage/usb", methods=["POST"])
+def api_storage_usb():
+    """Mount a USB partition persistently and store new captures there."""
+    busy = storage_busy()
+    if busy:
+        return jsonify(ok=False, error=busy), 409
+    uuid = (request.get_json(force=True) or {}).get("uuid", "")
+    try:
+        result = run_mount_helper("usb-mount", {"uuid": uuid})
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    CONFIG["storage"] = {"target": "usb", "uuid": result.get("uuid"), "label": result.get("label"),
+                         "fstype": result.get("fstype")}
+    save_config()
+    for kind in DATA_KINDS:
+        data_dir(kind)
+    files, size = data_size(sd_dir)
+    return jsonify(ok=True, usb=result, sd_data={"files": files, "bytes": size})
+
+
+@app.route("/api/storage/sd", methods=["POST"])
+def api_storage_sd():
+    """Back to the SD card. forget=true also unmounts the USB disk and removes it from fstab."""
+    busy = storage_busy()
+    if busy:
+        return jsonify(ok=False, error=busy), 409
+    forget = bool((request.get_json(silent=True) or {}).get("forget"))
+    usb_data = {"files": 0, "bytes": 0}
+    if os.path.ismount(USB_MOUNT):
+        files, size = data_size(lambda k: USB_MOUNT / "MiniatureStudio" / k)
+        usb_data = {"files": files, "bytes": size}
+    if forget:
+        try:
+            run_mount_helper("usb-remove")
+        except Exception as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+    CONFIG["storage"] = {**CONFIG.get("storage", {}), "target": "sd"}
+    save_config()
+    return jsonify(ok=True, usb_data=usb_data)
+
+
+@app.route("/api/storage/eject", methods=["POST"])
+def api_storage_eject():
+    """Safely remove the USB disk (it stays configured and is re-mounted when replugged)."""
+    busy = storage_busy()
+    if busy:
+        return jsonify(ok=False, error=busy), 409
+    try:
+        return jsonify(ok=True, **run_mount_helper("usb-eject"))
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+
+
+def run_move_data(job, direction):
+    """Move photos/stacks/videos between the SD card and the USB disk (copy, verify, delete)."""
+    usb_base = usb_root()
+    src_of = sd_dir if direction == "to_usb" else (lambda k: usb_base / k)
+    dst_of = (lambda k: usb_base / k) if direction == "to_usb" else sd_dir
+    files, size = data_size(src_of)
+    free = disk_free(dst_of("photos").parent if direction == "to_usb" else BASE_DIR)
+    if free and size > free["free"] - 200 * 1024 * 1024:
+        raise RuntimeError(f"not enough space: need {size / 1e9:.1f} GB, "
+                           f"{free['free'] / 1e9:.1f} GB free")
+    queued_raw = {i["raw"] for i in compressor.items}  # being compressed: leave in place
+    moved = skipped = 0
+    job_log(job, f"Moving {files} files ({size / 1e9:.2f} GB)")
+    for kind in DATA_KINDS:
+        src_base, dst_base = src_of(kind), dst_of(kind)
+        if not src_base.is_dir():
+            continue
+        for f in sorted(p for p in src_base.rglob("*") if p.is_file()):
+            if job.get("cancel"):
+                job_log(job, "Cancelled")
+                return {"moved": moved, "skipped": skipped, "cancelled": True}
+            rel = f.relative_to(src_base)
+            if ".thumbs" in rel.parts or ".tmp" in rel.parts or f.name.endswith(".part") \
+                    or str(f) in queued_raw:
+                skipped += 1
+                continue
+            target = dst_base / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() and target.stat().st_size == f.stat().st_size:
+                f.unlink()  # already copied in an earlier (interrupted) run
+            else:
+                shutil.copyfile(f, target)  # copyfile: FAT/exFAT cannot keep Unix modes
+                if target.stat().st_size != f.stat().st_size:
+                    raise RuntimeError(f"copy of {rel} is incomplete — stopped, nothing deleted")
+                f.unlink()
+            moved += 1
+            if moved % 25 == 0:
+                job_log(job, f"{moved}/{files} files moved")
+        shutil.rmtree(src_base / ".thumbs", ignore_errors=True)
+        for d in sorted((p for p in src_base.rglob("*") if p.is_dir()), reverse=True):
+            try:
+                d.rmdir()  # only removes empty folders
+            except OSError:
+                pass
+    job_log(job, f"Done: {moved} moved, {skipped} skipped")
+    return {"moved": moved, "skipped": skipped}
+
+
+@app.route("/api/storage/move", methods=["POST"])
+def api_storage_move():
+    direction = (request.get_json(force=True) or {}).get("direction", "to_usb")
+    if direction not in ("to_usb", "to_sd"):
+        return jsonify(ok=False, error="direction must be to_usb or to_sd"), 400
+    busy = storage_busy()
+    if busy:
+        return jsonify(ok=False, error=busy), 409
+    if not os.path.ismount(USB_MOUNT):
+        return jsonify(ok=False, error="USB disk not mounted"), 409
+    return jsonify(ok=True, job=start_job("move", direction, run_move_data, direction)["id"])
+
+
+# --------------------------------------------------------------------------
 # Routes — self-update (git based, see update.sh)
 # --------------------------------------------------------------------------
 
@@ -2174,6 +2408,8 @@ def handle_error(exc):
     from werkzeug.exceptions import HTTPException
     if isinstance(exc, HTTPException):
         return exc
+    if isinstance(exc, StorageUnavailable):
+        return jsonify(ok=False, error=str(exc), storage_unavailable=True), 503
     log.exception("Unhandled error")
     return jsonify(ok=False, error=str(exc)), 500
 

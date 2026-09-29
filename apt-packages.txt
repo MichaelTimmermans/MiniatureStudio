@@ -12,3 +12,5 @@ ffmpeg
 rclone
 cifs-utils
 nfs-common
+exfatprogs
+ntfs-3g

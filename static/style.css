@@ -116,3 +116,5 @@ ol { padding-left: 20px; }
   border: 4px solid var(--border); border-top-color: var(--accent); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+.grid2 input, .grid2 select { width: 100%; min-width: 0; }
+@media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }

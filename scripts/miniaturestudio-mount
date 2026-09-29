@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Root helper for MiniatureStudio: mount a NAS share persistently (fstab).
+"""Root helper for MiniatureStudio: mount a NAS share or a USB disk persistently (fstab).
 
 Installed by install.sh as /usr/local/sbin/miniaturestudio-mount (root-owned) with a
 sudoers rule for the service user. Usage (JSON on stdin, JSON on stdout):
@@ -9,7 +9,14 @@ sudoers rule for the service user. Usage (JSON on stdin, JSON on stdout):
     miniaturestudio-mount unmount
     miniaturestudio-mount status
 
-Only one MiniatureStudio share is managed; its fstab line is marked with MARKER.
+    miniaturestudio-mount usb-mount   {"uuid": "..."}   use this USB partition for photos
+    miniaturestudio-mount usb-remount                   re-mount the configured disk (replugged)
+    miniaturestudio-mount usb-eject                     unmount, keep it configured
+    miniaturestudio-mount usb-remove                    unmount and forget it
+    miniaturestudio-mount usb-status
+
+One NAS share and one USB disk are managed; their fstab lines are marked with
+MARKER / USB_MARKER.
 Inputs are validated strictly because this runs as root.
 """
 import json
@@ -23,6 +30,11 @@ CRED_DIR = "/etc/miniaturestudio"
 CRED_FILE = f"{CRED_DIR}/nas.cred"
 STATE_FILE = f"{CRED_DIR}/nas.json"
 MARKER = "# miniaturestudio-nas"
+USB_MARKER = "# miniaturestudio-usb"
+USB_STATE_FILE = f"{CRED_DIR}/usb.json"
+USB_MOUNT = "/mnt/miniaturestudio-usb"
+UUID_RE = re.compile(r"^[A-Fa-f0-9-]{4,36}$")
+USB_FSTYPES = {"ext4", "vfat", "exfat", "ntfs"}
 
 HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$|^\[?[0-9A-Fa-f:.]+\]?$")
 SHARE_RE = re.compile(r"^[A-Za-z0-9._ $/-]{1,200}$")
@@ -52,14 +64,14 @@ def write_fstab(lines):
     os.replace(tmp, FSTAB)
 
 
-def strip_entry(lines):
+def strip_entry(lines, marker=MARKER):
     """Drop our marker line and the fstab line right after it."""
     result, skip = [], False
     for line in lines:
         if skip:
             skip = False
             continue
-        if line.strip() == MARKER:
+        if line.strip() == marker:
             skip = True
             continue
         result.append(line)
@@ -101,10 +113,114 @@ def do_unmount(state):
     run("systemctl", "daemon-reload")
 
 
+def load_usb_state():
+    try:
+        with open(USB_STATE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def usb_unmount():
+    if is_mounted(USB_MOUNT):
+        run("sync")
+        if run("umount", USB_MOUNT).returncode != 0:
+            fail("the disk is busy — wait for background saving to finish and try again")
+
+
+def usb_action(action):
+    state = load_usb_state()
+    if action == "usb-status":
+        out({"configured": bool(state), "mounted": is_mounted(USB_MOUNT), **(state or {})})
+    if action == "usb-remount":
+        if not state:
+            fail("no USB disk configured")
+        if not is_mounted(USB_MOUNT):
+            r = run("mount", USB_MOUNT)
+            if r.returncode != 0:
+                fail("USB disk not connected: " + (r.stderr or r.stdout).strip())
+        out({"configured": True, "mounted": True, **state})
+    if action == "usb-eject":
+        usb_unmount()
+        out({"configured": bool(state), "mounted": False, **(state or {})})
+    if action == "usb-remove":
+        usb_unmount()
+        write_fstab(strip_entry(read_fstab(), USB_MARKER))
+        if os.path.exists(USB_STATE_FILE):
+            os.remove(USB_STATE_FILE)
+        run("systemctl", "daemon-reload")
+        out({"configured": False, "mounted": False})
+    if action != "usb-mount":
+        fail("unknown usb action")
+
+    try:
+        req = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        fail("invalid JSON")
+    uuid = (req.get("uuid") or "").strip()
+    if not UUID_RE.match(uuid):
+        fail("invalid UUID")
+    device = run("blkid", "-U", uuid).stdout.strip()
+    if not device.startswith("/dev/"):
+        fail("disk not found — is it plugged in?")
+    fstype = run("blkid", "-s", "TYPE", "-o", "value", device).stdout.strip()
+    if fstype not in USB_FSTYPES:
+        fail(f"unsupported filesystem {fstype!r} (use ext4, exFAT, FAT32 or NTFS)")
+    # Never take over the disk the system itself runs from.
+    for mp in ("/", "/boot", "/boot/firmware"):
+        src = run("findmnt", "-n", "-o", "SOURCE", mp).stdout.strip()
+        if src and os.path.realpath(src) == os.path.realpath(device):
+            fail("that is the system disk")
+    parent = run("lsblk", "-no", "PKNAME", device).stdout.strip() or os.path.basename(device)
+    if run("lsblk", "-dno", "TRAN", f"/dev/{parent}").stdout.strip() != "usb":
+        fail("not a USB disk")
+
+    uid = int(os.environ.get("SUDO_UID", "1000"))
+    gid = int(os.environ.get("SUDO_GID", "1000"))
+    # nofail + short timeout: a missing disk never blocks booting.
+    common = "noatime,nofail,x-systemd.device-timeout=5s"
+    if fstype == "ext4":
+        fs, opts = "ext4", f"defaults,{common}"
+    elif fstype == "ntfs":
+        if not os.path.exists("/usr/bin/ntfs-3g") and not os.path.exists("/bin/ntfs-3g"):
+            fail("ntfs-3g is not installed (sudo apt install ntfs-3g)")
+        fs, opts = "ntfs-3g", f"uid={uid},gid={gid},umask=0022,{common}"
+    else:  # vfat / exfat have no Unix owners: map everything to the service user
+        fs, opts = fstype, f"uid={uid},gid={gid},umask=0022,{common}"
+
+    # Replace a previously configured disk.
+    if is_mounted(USB_MOUNT):
+        usb_unmount()
+    # Unmount wherever the desktop/udisks may have mounted it.
+    for mp in run("findmnt", "-n", "-o", "TARGET", device).stdout.split():
+        run("umount", mp)
+    os.makedirs(USB_MOUNT, exist_ok=True)
+    lines = strip_entry(read_fstab(), USB_MARKER)
+    write_fstab(lines + [USB_MARKER, f"UUID={uuid} {USB_MOUNT} {fs} {opts} 0 0"])
+    run("systemctl", "daemon-reload")
+    r = run("mount", USB_MOUNT)
+    if r.returncode != 0 or not is_mounted(USB_MOUNT):
+        write_fstab(strip_entry(read_fstab(), USB_MARKER))
+        run("systemctl", "daemon-reload")
+        fail("mount failed: " + ((r.stderr or r.stdout).strip() or "unknown error"))
+    data = os.path.join(USB_MOUNT, "MiniatureStudio")
+    os.makedirs(data, exist_ok=True)
+    if fstype == "ext4":
+        os.chown(data, uid, gid)
+    label = run("blkid", "-s", "LABEL", "-o", "value", device).stdout.strip()
+    new_state = {"uuid": uuid, "fstype": fstype, "label": label, "mount_point": USB_MOUNT}
+    os.makedirs(CRED_DIR, mode=0o700, exist_ok=True)
+    with open(USB_STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(new_state, f)
+    out({"configured": True, "mounted": True, **new_state})
+
+
 def main():
     if os.geteuid() != 0:
         fail("must run as root")
     action = sys.argv[1] if len(sys.argv) > 1 else ""
+    if action.startswith("usb-"):
+        usb_action(action)
     state = load_state()
 
     if action == "status":
@@ -117,7 +233,7 @@ def main():
         out({"configured": False, "mounted": False})
 
     if action != "mount":
-        fail("usage: miniaturestudio-mount mount|unmount|status")
+        fail("usage: miniaturestudio-mount mount|unmount|status|usb-mount|usb-remount|usb-eject|usb-remove|usb-status")
 
     try:
         req = json.loads(sys.stdin.read() or "{}")

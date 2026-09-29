@@ -50,7 +50,7 @@ document.querySelectorAll("#tabs button").forEach((btn) => btn.addEventListener(
   document.querySelectorAll(".tab").forEach((t) => { t.hidden = t.id !== "tab-" + btn.dataset.tab; });
   const loaders = {
     controls: [loadControls], stacks: [loadStacks], gallery: [loadGallery], jobs: [loadJobs],
-    settings: [loadSettings, loadDrive, loadNas],
+    settings: [loadSettings, loadStorage, loadDrive, loadNas],
   };
   (loaders[btn.dataset.tab] || []).forEach((fn) => fn().catch((e) => console.warn(e)));
 }));
@@ -75,6 +75,12 @@ function renderBadges() {
     b.append(el("span", { class: "badge", title: "Background work — you can keep shooting" },
       [writing ? `💾 writing ${writing}` : null, compressing ? `🗜 compressing ${compressing}` : null]
         .filter(Boolean).join(" · ")));
+  }
+  const st = status.storage;
+  if (st?.target === "usb") {
+    b.append(st.available
+      ? el("span", { class: "badge ok", title: "Captures are saved to the USB disk" }, `USB ${st.label || "disk"}`)
+      : el("span", { class: "badge warn", title: "Plug the disk back in, or switch to the SD card in Settings → Storage" }, "USB disk missing"));
   }
   const err = status.saving?.last_error || status.compressing?.last_error;
   if (err) b.append(el("span", { class: "badge warn", title: err }, "save error"));
@@ -723,6 +729,80 @@ $("#btn-settings-save").addEventListener("click", (e) => { e.preventDefault(); g
   info = await api("/api/camera_info");
   renderBadges();
 }, "#settings-message"); });
+
+// ---------------------------------------------------------------- storage: SD card / USB disk
+const gb = (n) => (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + " GB";
+let storageState = {};
+
+async function loadStorage() {
+  const r = storageState = await api("/api/storage");
+  const usbName = r.usb.label || r.usb.uuid || "USB disk";
+  const where = r.target === "usb"
+    ? (r.usb_mounted ? `USB disk “${usbName}” — ${gb(r.free.usb.free)} free` : `USB disk “${usbName}” — NOT CONNECTED`)
+    : `SD card — ${r.free.sd ? gb(r.free.sd.free) : "?"} free`;
+  $("#storage-status").replaceChildren("Saving to: ", el("strong", {}, where));
+  $("#storage-status").className = r.target === "usb" && !r.usb_mounted ? "error" : "";
+
+  const list = $("#usb-disks");
+  list.replaceChildren();
+  const disks = r.disks.filter((d) => !(r.target === "usb" && d.uuid === r.usb.uuid && r.usb_mounted));
+  if (!disks.length && !(r.target === "usb" && r.usb_mounted)) {
+    list.append(el("p", { class: "muted small" }, "No USB disks found. Plug one in and click “Look for USB disks”."));
+  }
+  for (const d of disks) {
+    const name = `${d.label || d.model || d.path} (${d.fstype}, ${gb(d.size)})`;
+    list.append(el("div", { class: "card row" },
+      el("span", {}, name),
+      d.supported
+        ? el("button", { class: "primary", onclick: () => useUsb(d, name) }, "Use this disk")
+        : el("span", { class: "muted small" }, `${d.fstype} is not supported — format it as exFAT or ext4`)));
+  }
+  $("#btn-storage-eject").hidden = !(r.target === "usb" && r.usb_mounted);
+  $("#btn-storage-sd").hidden = r.target !== "usb";
+  $("#btn-storage-forget").hidden = !(r.usb.configured && r.target !== "usb");
+}
+
+// After switching, offer to move the existing files along (runs as a background job).
+async function offerMove(direction, data, what) {
+  if (!data || !data.files) return;
+  if (!confirm(`Move your existing photos, stacks and videos (${data.files} files, ${gb(data.bytes)}) ${what}?\n\n` +
+               "This runs in the background; each file is deleted from the old place only after it has been copied.")) return;
+  const r = await api("/api/storage/move", "POST", { direction });
+  say("Moving files in the background — see the Jobs tab for progress.", false, "#storage-message");
+  watchJob(r.job);
+}
+
+async function useUsb(disk, name) {
+  await guarded(async () => {
+    if (!confirm(`Store new photos on ${name}?\n\nNothing on the disk is erased; a MiniatureStudio folder is created.`)) return;
+    say("Mounting…", false, "#storage-message");
+    const r = await api("/api/storage/usb", "POST", { uuid: disk.uuid });
+    say("New captures are now saved to the USB disk.", false, "#storage-message");
+    await loadStorage();
+    await offerMove("to_usb", r.sd_data, "from the SD card to the USB disk");
+  }, "#storage-message");
+}
+
+$("#btn-storage-refresh").addEventListener("click", () => guarded(loadStorage, "#storage-message"));
+$("#btn-storage-eject").addEventListener("click", () => guarded(async () => {
+  await api("/api/storage/eject", "POST", {});
+  say("You can unplug the disk now. Captures are paused until it is plugged back in (or you switch to the SD card).",
+      false, "#storage-message");
+  loadStorage();
+}, "#storage-message"));
+$("#btn-storage-sd").addEventListener("click", () => guarded(async () => {
+  if (!confirm("Save new captures to the SD card again?")) return;
+  const r = await api("/api/storage/sd", "POST", {});
+  say("New captures are saved to the SD card again. The USB disk stays mounted until you forget it.", false, "#storage-message");
+  await loadStorage();
+  await offerMove("to_sd", r.usb_data, "from the USB disk back to the SD card");
+}, "#storage-message"));
+$("#btn-storage-forget").addEventListener("click", () => guarded(async () => {
+  if (!confirm("Unmount the USB disk and stop mounting it at boot? Files on the disk are not touched.")) return;
+  await api("/api/storage/sd", "POST", { forget: true });
+  say("USB disk forgotten — you can unplug it.", false, "#storage-message");
+  loadStorage();
+}, "#storage-message"));
 
 // ---------------------------------------------------------------- connections: Google Drive
 async function loadDrive() {

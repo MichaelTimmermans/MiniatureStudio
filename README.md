@@ -109,6 +109,19 @@ status and logs.
 A pattern in Python `str.format` syntax, e.g. `{dt:%Y%m%d_%H%M%S}_{label}` or
 `{seq:04d}_{label}`. `{seq}` increments every time it is used.
 
+## Storage: SD card or USB disk
+
+To spare the SD card, store photos on a USB disk: **Settings → Storage → Look
+for USB disks → Use this disk**. Nothing is erased; a `MiniatureStudio` folder
+is created on the disk (ext4, exFAT, FAT32 or NTFS). The disk is mounted again
+at every boot and when you replug it. When switching you are offered to move
+the existing photos along (a background job that deletes each file only after
+it was copied); switching back to the SD card offers the same the other way.
+
+If the selected disk is missing, capturing stops with a clear message instead
+of silently writing to the SD card. Use **Safely remove USB disk** before
+unplugging. A USB SSD is the fastest and most durable option.
+
 ## Upload
 
 - **Google Drive**: **Settings → Connect Google Drive**. Sign in with Google in
