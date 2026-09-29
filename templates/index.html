@@ -118,7 +118,11 @@
 
     <!-- Stacks -->
     <div class="tab" id="tab-stacks" hidden>
-      <div class="row"><button id="btn-stacks-refresh">Refresh</button></div>
+      <div class="row">
+        <button id="btn-stacks-refresh">Refresh</button>
+        <button id="btn-stacks-process-all" class="primary" hidden>Process all unprocessed stacks</button>
+      </div>
+      <div class="muted small">Stacks are processed one after another in the background — shoot them all, queue them, walk away.</div>
       <div id="stacks"></div>
     </div>
 

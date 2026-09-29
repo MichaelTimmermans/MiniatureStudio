@@ -874,7 +874,8 @@ def write_sidecar(path, metadata, extra=None):
 
 jobs = {}
 jobs_lock = threading.Lock()
-processing_slot = threading.Semaphore(1)  # one focus-stack run at a time (Pi RAM)
+stack_queue = None  # focus-stack jobs (queue.Queue), worked off by _stack_worker; set in main()
+stack_order = []  # ids of focus-stack jobs still waiting, in queue order (guarded by jobs_lock)
 
 
 def job_log(job, line):
@@ -891,10 +892,9 @@ def start_job(kind, name, fn, *args):
         jobs[job["id"]] = job
 
     def runner():
-        slot = processing_slot if kind == "focus-stack" else None
         try:
-            if slot:
-                slot.acquire()
+            if job.get("cancel"):
+                raise RuntimeError("cancelled before it started")
             job["status"] = "running"
             job["result"] = fn(job, *args)
             job["status"] = "done"
@@ -904,12 +904,32 @@ def start_job(kind, name, fn, *args):
             job["error"] = str(exc)
             job_log(job, f"ERROR: {exc}")
         finally:
-            if slot:
-                slot.release()
             job["finished"] = time.time()
 
-    threading.Thread(target=runner, daemon=True).start()
+    if kind == "focus-stack":
+        with jobs_lock:
+            stack_order.append(job["id"])
+        stack_queue.put((job, runner))  # strictly one after another, in order
+    else:
+        threading.Thread(target=runner, daemon=True).start()
     return job
+
+
+def _stack_worker():
+    """Runs focus-stack jobs one at a time, first come first served (Pi RAM)."""
+    while True:
+        job, runner = stack_queue.get()
+        with jobs_lock:
+            if job["id"] in stack_order:
+                stack_order.remove(job["id"])
+        if not job.get("cancel"):
+            runner()
+
+
+def stack_queue_position(job_id):
+    """1 = next to run; None when not waiting."""
+    with jobs_lock:
+        return stack_order.index(job_id) + 1 if job_id in stack_order else None
 
 
 def latest_job(kind, name):
@@ -1033,8 +1053,10 @@ def auto_threads():
 def run_focus_stack_once(job, binary, stack_dir, name, frames, opts):
     cmd, output = build_focus_stack_cmd(binary, stack_dir, name, frames, opts)
     job_log(job, "$ " + " ".join(shlex.quote(c) for c in cmd))
+    # Low priority: the camera and web UI stay responsive while stacks are processed.
+    nice = (lambda: os.nice(10)) if os.name == "posix" else None
     proc = subprocess.Popen(cmd, cwd=stack_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1)
+                            text=True, bufsize=1, preexec_fn=nice)
     job["pid"] = proc.pid
     for line in proc.stdout:
         job_log(job, line)
@@ -1780,6 +1802,11 @@ def api_job_cancel(job_id):
     if not job:
         abort(404)
     job["cancel"] = True
+    if job["status"] == "queued":
+        with jobs_lock:
+            if job["id"] in stack_order:
+                stack_order.remove(job["id"])
+        job.update(status="error", error="cancelled", finished=time.time())
     if job["kind"] == "focus-stack" and job.get("pid") and job["status"] == "running":
         try:
             os.kill(job["pid"], 15)
@@ -1802,6 +1829,31 @@ def api_stack_process(name):
         return jsonify(ok=False, error=f"unknown options: {sorted(unknown)}"), 400
     job = start_job("focus-stack", name, run_focus_stack, name, overrides)
     return jsonify(ok=True, job=job["id"])
+
+
+def unprocessed_stacks():
+    """Stacks with >= 2 frames, no result, not open and not already queued - oldest first."""
+    base = data_dir("stacks")
+    found = []
+    for d in sorted((p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")),
+                    key=lambda p: p.stat().st_mtime):
+        if stack_busy(d.name) or "result" in stack_outputs(d, d.name):
+            continue
+        if len(stack_frames(d, d.name)) >= 2:
+            found.append(d.name)
+    return found
+
+
+@app.route("/api/stacks/process_all", methods=["POST"])
+def api_stacks_process_all():
+    """Queue every unprocessed stack; they run one after another."""
+    overrides = (request.get_json(silent=True) or {}).get("options") or {}
+    unknown = set(overrides) - set(CONFIG["focus_stack"])
+    if unknown:
+        return jsonify(ok=False, error=f"unknown options: {sorted(unknown)}"), 400
+    names = unprocessed_stacks()
+    ids = [start_job("focus-stack", n, run_focus_stack, n, overrides)["id"] for n in names]
+    return jsonify(ok=True, queued=len(ids), stacks=names, jobs=ids)
 
 
 @app.route("/api/jobs")
@@ -1861,9 +1913,10 @@ def api_stacks():
             "frames": [f.name for f in frames],
             "outputs": stack_outputs(d, d.name),
             "open": bool(active_stack and active_stack["name"] == d.name),
-            "job": job and {k: job[k] for k in ("id", "status", "error")},
+            "job": job and {**{k: job[k] for k in ("id", "status", "error")},
+                            "position": stack_queue_position(job["id"])},
         })
-    return jsonify(stacks=stacks)
+    return jsonify(stacks=stacks, unprocessed=len(unprocessed_stacks()))
 
 
 def list_files(kind, exts, limit=100):
@@ -2503,7 +2556,10 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if args.demo:
         os.environ["MINIATURESTUDIO_DEMO"] = "1"
-    global save_queue, compressor
+    global save_queue, compressor, stack_queue
+    import queue
+    stack_queue = queue.Queue()
+    threading.Thread(target=_stack_worker, daemon=True, name="focus-stack-queue").start()
     save_queue = SaveQueue(int(CONFIG["camera"].get("save_queue", 2)))
     compressor = Compressor(BASE_DIR / ".compress_queue.json", int(CONFIG["camera"].get("compress_workers", 0)))
     camera = open_camera()

@@ -541,7 +541,9 @@ function stackCard(s) {
   const base = `/media/stacks/${enc(s.name)}/`;
   const thumbOf = (f) => `/thumb/stacks/${enc(s.name)}/${enc(f)}`;
   const cover = s.outputs.result || s.frames[Math.floor(s.frames.length / 2)];
-  const jobInfo = s.job ? el("span", { class: "badge " + ({ done: "ok", error: "warn" })[s.job.status] }, `processing: ${s.job.status}`) : null;
+  const jobText = s.job?.status === "queued" && s.job.position ? `queued #${s.job.position}`
+    : s.job?.status === "running" ? "processing…" : `processing: ${s.job?.status}`;
+  const jobInfo = s.job ? el("span", { class: "badge " + ({ done: "ok", error: "warn" })[s.job.status] }, jobText) : null;
   const frames = el("div", { class: "frames", hidden: true },
     s.frames.map((f) => el("figure", {},
       el("img", { src: thumbOf(f), loading: "lazy", alt: f, onclick: () => openViewer(f, base + enc(f)) }),
@@ -622,8 +624,23 @@ async function loadStacks() {
   if (!info.focus_stack?.available) box.append(el("p", { class: "error" }, "focus-stack binary not found — run ./install.sh on the Pi."));
   if (!r.stacks.length) box.append(el("p", { class: "muted" }, "No stacks yet."));
   r.stacks.forEach((s) => box.append(stackCard(s)));
+  const all = $("#btn-stacks-process-all");
+  all.hidden = !r.unprocessed || !info.focus_stack?.available;
+  all.textContent = `Process all unprocessed stacks (${r.unprocessed})`;
+  // Keep the queue positions fresh while stacks are waiting or running.
+  clearTimeout(stacksTimer);
+  if (!$("#tab-stacks").hidden && r.stacks.some((s) => s.job && ["queued", "running"].includes(s.job.status))) {
+    stacksTimer = setTimeout(() => loadStacks().catch(() => {}), 5000);
+  }
 }
 $("#btn-stacks-refresh").addEventListener("click", loadStacks);
+let stacksTimer = null;
+$("#btn-stacks-process-all").addEventListener("click", () => guarded(async () => {
+  const r = await api("/api/stacks/process_all", "POST", { options: processOptions() });
+  say(`${r.queued} stack(s) queued — they are processed one after another.`, false, "#stacks-msg");
+  r.jobs.forEach(watchJob);
+  loadStacks();
+}, "#stacks-msg"));
 $("#btn-jobs-refresh").addEventListener("click", loadJobs);
 $("#btn-jobs-clear").addEventListener("click", async () => {
   await api("/api/jobs/clear", "POST", {}).catch((e) => alert(e.message));
