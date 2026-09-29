@@ -18,7 +18,7 @@ header { display: flex; align-items: center; gap: 16px; padding: 8px 16px; borde
 header h1 { font-size: 18px; margin: 0; }
 #badges { display: flex; gap: 6px; flex-wrap: wrap; }
 
-main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr); gap: 16px; padding: 16px; }
+main { display: grid; grid-template-columns: minmax(0, 5fr) minmax(360px, 4fr); gap: 16px; padding: 12px 16px; }
 @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
 
 #preview-wrap { position: relative; background: #000; border: 1px solid var(--border); }
@@ -75,7 +75,7 @@ fieldset { border: 1px solid var(--border); border-radius: 6px; margin: 0 0 12px
 legend { color: var(--muted); padding: 0 4px; }
 
 #live { color: var(--muted); margin: 6px 0 10px; min-height: 1.4em; }
-.control { display: grid; grid-template-columns: 11em minmax(0, 1fr) auto; gap: 8px; align-items: center;
+.control { display: grid; grid-template-columns: 11em minmax(0, 1fr) auto auto; gap: 8px; align-items: center;
   padding: 4px 0; border-bottom: 1px solid var(--border); }
 .control label { font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
 .numctl { display: flex; gap: 6px; align-items: center; min-width: 0; }
@@ -132,3 +132,28 @@ ol { padding-left: 20px; }
 .bar.crit > span { background: var(--danger); }
 .alert { border: 1px solid var(--danger); color: var(--danger); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
 .alert.past { border-color: var(--warn); color: var(--warn); }
+
+/* Wide screens: the preview stays in view while the settings column scrolls. */
+@media (min-width: 901px) {
+  #preview-pane { position: sticky; top: 8px; align-self: start; max-height: calc(100vh - 16px); overflow-y: auto; }
+}
+#all-controls { margin: 10px 0; }
+#all-controls > summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
+.control .pin { background: none; border: none; color: var(--muted); padding: 0 4px; font-size: 15px; }
+.control .pin.on { color: var(--warn); }
+#quick-controls:empty::after { content: "No pinned controls — pin some with ☆ under All controls."; color: var(--muted); font-size: 12px; }
+
+/* Studio column: compact preview with histogram, focus check and quick controls beside/below it. */
+#preview-wrap { width: fit-content; max-width: 100%; margin: 0 auto; }
+#preview { max-height: 48vh; width: auto; max-width: 100%; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; margin: 6px 0; }
+.analysis { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
+.analysis .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px; min-width: 0; }
+.analysis .panel[hidden] { display: none; }
+#histogram { height: 110px; }
+#focus-check img { max-height: 180px; width: 100%; object-fit: contain; margin: 0 0 4px; }
+#quick-box { margin-top: 8px; }
+#quick-box .control { grid-template-columns: 9.5em minmax(0, 1fr) auto auto; padding: 2px 0; font-size: 12px; }
+#quick-box .numctl .num { width: 6em; }
+#quick-box select { padding: 3px 6px; }
+@media (min-width: 1700px) { #quick-controls { display: grid; grid-template-columns: 1fr 1fr; column-gap: 18px; } }

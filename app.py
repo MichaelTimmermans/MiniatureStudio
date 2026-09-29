@@ -2399,7 +2399,7 @@ def api_upload():
 
 EDITABLE_SETTINGS = {"filename_pattern", "image_format", "jpeg_quality", "png_compress_level",
                      "save_metadata", "persist_controls", "next_seq", "focus_stack", "upload",
-                     "video", "camera", "sweep"}
+                     "video", "camera", "sweep", "ui"}
 
 
 @app.route("/api/settings", methods=["GET", "POST"])

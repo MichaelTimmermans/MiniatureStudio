@@ -84,5 +84,8 @@
     "nas_path": "/mnt/nas/miniaturestudio",
     "nas_require_mount": true,
     "stack_frames": false
+  },
+  "ui": {
+    "pinned_controls": null
   }
 }

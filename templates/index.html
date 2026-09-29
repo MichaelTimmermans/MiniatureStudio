@@ -20,21 +20,34 @@
       <div id="focus-marker" hidden></div>
       <canvas id="clip-overlay" hidden></canvas>
     </div>
-    <div class="row small">
+    <div class="toolbar small">
       <label><input type="checkbox" id="toggle-grid"> Grid</label>
-      <label><input type="checkbox" id="toggle-focus"> Focus check (100% crop)</label>
+      <label><input type="checkbox" id="toggle-focus"> Focus check</label>
       <label><input type="checkbox" id="toggle-histogram"> Histogram</label>
-      <label><input type="checkbox" id="toggle-clipping"> Show clipping</label>
-      <span class="muted">Click the preview to choose the focus point</span>
+      <label><input type="checkbox" id="toggle-clipping"> Clipping</label>
+      <span class="muted">click the preview to set the focus point</span>
     </div>
-    <div id="histogram-box" hidden>
-      <canvas id="histogram" width="512" height="140"></canvas>
-      <div class="small" id="histogram-info"></div>
+    <div class="analysis">
+      <div id="histogram-box" class="panel" hidden>
+        <canvas id="histogram" width="512" height="140"></canvas>
+        <div class="small" id="histogram-info"></div>
+      </div>
+      <div id="focus-check" class="panel" hidden>
+        <img id="focus-crop" alt="Focus crop">
+        <div class="small">Sharpness <strong id="sharpness">–</strong> <span class="muted">· best <span id="sharpness-max">–</span></span></div>
+      </div>
     </div>
-    <div id="focus-check" hidden>
-      <img id="focus-crop" alt="Focus crop">
-      <div>Sharpness: <strong id="sharpness">–</strong> <span class="muted">(higher = sharper, best so far <span id="sharpness-max">–</span>)</span></div>
-    </div>
+    <fieldset id="quick-box">
+      <legend>Quick controls</legend>
+      <div id="quick-controls"></div>
+      <div class="row">
+        <button id="btn-af" hidden>Autofocus</button>
+        <button id="btn-lock-exposure" title="Keep the current auto exposure and white balance as fixed manual values">Lock exposure &amp; WB</button>
+        <button id="btn-controls-reset">Reset all</button>
+      </div>
+      <div id="live" class="small"></div>
+      <div class="muted small">Pin or unpin controls with ☆ under Camera → All controls.</div>
+    </fieldset>
   </section>
 
   <section id="side">
@@ -97,6 +110,22 @@
     <!-- Camera -->
     <div class="tab" id="tab-controls" hidden>
       <fieldset>
+        <legend>Presets for <span id="preset-model"></span></legend>
+        <div class="row">
+          <select id="preset-select"></select>
+          <button id="btn-preset-load">Load</button>
+          <button id="btn-preset-save">Save as…</button>
+          <button id="btn-preset-default">Load at boot</button>
+          <button id="btn-preset-delete" class="danger">Delete</button>
+        </div>
+        <div class="muted small" id="preset-info"></div>
+      </fieldset>
+      <details id="all-controls" open>
+        <summary>All controls</summary>
+        <div class="row"><input id="control-filter" placeholder="Filter controls…"></div>
+        <div id="controls"></div>
+      </details>
+      <fieldset>
         <legend>Camera</legend>
         <div class="row">
           <select id="camera-select"></select>
@@ -130,25 +159,6 @@
           this setting (writes <code>config.txt</code>, keeps a backup). 64MP frames need a Pi 4/5 — on a Pi 3B pick a lower
           capture resolution.</div>
       </fieldset>
-      <fieldset>
-        <legend>Presets for <span id="preset-model"></span></legend>
-        <div class="row">
-          <select id="preset-select"></select>
-          <button id="btn-preset-load">Load</button>
-          <button id="btn-preset-save">Save as…</button>
-          <button id="btn-preset-default">Load at boot</button>
-          <button id="btn-preset-delete" class="danger">Delete</button>
-        </div>
-        <div class="muted small" id="preset-info"></div>
-      </fieldset>
-      <div class="row">
-        <input id="control-filter" placeholder="Filter controls…">
-        <button id="btn-af" hidden>Autofocus</button>
-        <button id="btn-lock-exposure" title="Keep the current auto exposure and white balance as fixed manual values">Lock exposure &amp; WB</button>
-        <button id="btn-controls-reset">Reset all</button>
-      </div>
-      <div id="live" class="small"></div>
-      <div id="controls"></div>
     </div>
 
     <!-- Stacks -->

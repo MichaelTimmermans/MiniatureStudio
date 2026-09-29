@@ -370,8 +370,27 @@ function controlRow(c) {
   }
   const reset = el("button", { class: "tiny", title: `default: ${JSON.stringify(c.default)}`,
     onclick: () => { if (c.default !== null) { queueControl(c.name, c.default); setTimeout(loadControls, 600); } } }, "↺");
+  const pinned = pinnedControls().includes(c.name);
+  const pin = el("button", { class: "pin" + (pinned ? " on" : ""), title: pinned ? "Unpin from Quick controls" : "Pin to Quick controls",
+    onclick: () => togglePin(c.name) }, pinned ? "★" : "☆");
+  const unit = CONTROL_UNITS[c.name];
   return el("div", { class: "control", "data-name": c.name.toLowerCase() },
-    el("label", { title: `${JSON.stringify(c.min)} … ${JSON.stringify(c.max)}` }, c.name), input, reset);
+    el("label", { title: `${JSON.stringify(c.min)} … ${JSON.stringify(c.max)}` }, unit ? `${c.name} (${unit})` : c.name),
+    input, reset, pin);
+}
+
+// Controls you tweak all the time; the user can change the list with the ☆ pins.
+const DEFAULT_PINNED = ["AeEnable", "ExposureTimeMode", "ExposureTime", "AnalogueGainMode", "AnalogueGain",
+  "ExposureValue", "AwbEnable", "AwbMode", "ColourTemperature", "Brightness", "Contrast", "Saturation",
+  "Sharpness", "AfMode", "LensPosition"];
+const CONTROL_UNITS = { ExposureTime: "µs", ColourTemperature: "K", LensPosition: "dioptre", FrameDurationLimits: "µs" };
+function pinnedControls() { return settings.ui?.pinned_controls || DEFAULT_PINNED; }
+async function togglePin(name) {
+  const list = pinnedControls().filter((n) => n !== name);
+  if (list.length === pinnedControls().length) list.push(name);
+  await api("/api/settings", "POST", { ui: { pinned_controls: list } });
+  settings.ui = { ...(settings.ui || {}), pinned_controls: list };
+  renderControls();
 }
 
 let cameraState = {};
@@ -485,8 +504,14 @@ async function loadControls() {
   loadPresets().catch(() => {});
   const r = await api("/api/controls");
   controlsDesc = r.controls;
-  $("#controls").replaceChildren(...controlsDesc.map(controlRow));
+  renderControls();
   renderLive(r.live);
+}
+function renderControls() {
+  const pinned = pinnedControls();
+  const byName = Object.fromEntries(controlsDesc.map((c) => [c.name, c]));
+  $("#quick-controls").replaceChildren(...pinned.filter((n) => byName[n]).map((n) => controlRow(byName[n])));
+  $("#controls").replaceChildren(...controlsDesc.filter((c) => !pinned.includes(c.name)).map(controlRow));
   applyFilter();
 }
 function renderLive(live) {
@@ -496,7 +521,7 @@ function renderLive(live) {
 }
 function applyFilter() {
   const q = $("#control-filter").value.toLowerCase();
-  document.querySelectorAll(".control").forEach((row) => { row.hidden = q && !row.dataset.name.includes(q); });
+  document.querySelectorAll("#controls .control").forEach((row) => { row.hidden = q && !row.dataset.name.includes(q); });
 }
 $("#control-filter").addEventListener("input", applyFilter);
 $("#btn-controls-reset").addEventListener("click", () => guarded(async () => {
@@ -509,7 +534,7 @@ $("#btn-af").addEventListener("click", () => guarded(async () => {
   $("#live").textContent = `Autofocus ${r.ok ? "succeeded" : "failed"} — LensPosition ${r.lens_position}`;
 }, "#live"));
 setInterval(async () => {
-  if ($("#tab-controls").hidden || document.hidden) return;
+  if (document.hidden) return;
   try { renderLive((await api("/api/controls")).live); } catch (_) { /* ignore */ }
 }, 2000);
 
@@ -1133,6 +1158,25 @@ $("#btn-update-apply").addEventListener("click", () => guarded(async () => {
   tick();
 }, "#update-info"));
 
+// ---------------------------------------------------------------- remember view options (per browser)
+const REMEMBERED = ["toggle-grid", "toggle-focus", "toggle-histogram", "toggle-clipping", "stack-autoprocess"];
+function store(key, value) { try { localStorage.setItem("ms." + key, JSON.stringify(value)); } catch (_) { /* private mode */ } }
+function recall(key) { try { const v = localStorage.getItem("ms." + key); return v === null ? undefined : JSON.parse(v); } catch (_) { return undefined; } }
+REMEMBERED.forEach((id) => $("#" + id).addEventListener("change", (e) => store(id, e.target.checked)));
+document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => store("tab", b.dataset.tab)));
+function restoreView() {
+  REMEMBERED.forEach((id) => {
+    const v = recall(id), box = $("#" + id);
+    if (typeof v === "boolean" && v !== box.checked) {
+      box.checked = v;
+      box.dispatchEvent(new Event("change"));  // runs the normal handlers (overlay, histogram, focus check)
+    }
+  });
+  const tab = recall("tab");
+  const btn = tab && document.querySelector(`#tabs button[data-tab="${tab}"]`);
+  if (btn) btn.click();
+}
+
 // ---------------------------------------------------------------- init
 (async function init() {
   // Right after an update the app may still be restarting: retry instead of showing
@@ -1153,6 +1197,8 @@ $("#btn-update-apply").addEventListener("click", () => guarded(async () => {
     ["#sweep-start", "#sweep-end"].forEach((s) => { $(s).min = lo; $(s).max = hi; });
   }
   await guarded(loadSettings);
+  loadControls().catch(() => {});
+  restoreView();
   loadVersion();
   refreshStatus();
   setInterval(refreshStatus, 1500);
