@@ -196,6 +196,19 @@
       <div id="system-warnings"></div>
       <div id="system-stats" class="stats"></div>
       <fieldset>
+        <legend>Log</legend>
+        <div class="row small">
+          <label>Lines <select id="log-lines"><option>100</option><option selected>300</option><option>1000</option></select></label>
+          <label><input type="checkbox" id="log-requests"> Web requests</label>
+          <label><input type="checkbox" id="log-auto" checked> Auto-refresh</label>
+          <input id="log-filter" placeholder="Filter…" class="wide">
+          <button id="btn-log-refresh">Refresh</button>
+          <a class="button" href="/download/debug-log" title="App log, kernel messages, system info, settings and recent jobs in one text file">Download debug log</a>
+        </div>
+        <pre id="log-view" class="log log-big"></pre>
+        <div class="muted small" id="log-source"></div>
+      </fieldset>
+      <fieldset>
         <legend>Power</legend>
         <div class="row">
           <button id="btn-restart-app">Restart app</button>

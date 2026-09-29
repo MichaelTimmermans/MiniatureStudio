@@ -2941,6 +2941,92 @@ def api_system():
     )
 
 
+class MemoryLogHandler(logging.Handler):
+    """Last log lines in memory: fallback when the systemd journal is not readable."""
+
+    def __init__(self, size=3000):
+        super().__init__()
+        import collections
+        self.lines = collections.deque(maxlen=size)
+        self.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+
+    def emit(self, record):
+        try:
+            self.lines.append(self.format(record))
+        except Exception:
+            pass
+
+
+memory_log = MemoryLogHandler()
+WEB_REQUEST = re.compile(r'werkzeug: .*"(GET|POST|DELETE|PUT) ')
+
+
+def read_journal(lines, unit="miniaturestudio", kernel=False):
+    """Journal lines for the service (or the kernel) since boot; None if not readable."""
+    cmd = ["journalctl", "-b", "--no-pager", "-o", "short-iso", "-n", str(lines)]
+    cmd += ["-k"] if kernel else ["-u", unit]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    except Exception:
+        return None
+    text = out.stdout.strip()
+    if out.returncode != 0 or not text or "No journal files" in text:
+        return None
+    return text.splitlines()
+
+
+def app_log_lines(lines=300, requests=False):
+    """(source, lines): the systemd journal when readable (includes libcamera's own
+    messages), otherwise the in-memory log of this process."""
+    fetch = lines * 4 if not requests else lines  # page requests are most of the journal
+    journal = read_journal(fetch)
+    source, data = ("journal", journal) if journal else ("memory", list(memory_log.lines))
+    if not requests:
+        data = [l for l in data if not WEB_REQUEST.search(l)]
+    return source, data[-lines:]
+
+
+@app.route("/api/system/log")
+def api_system_log():
+    lines = min(max(int(request.args.get("lines", 300)), 20), 5000)
+    source, data = app_log_lines(lines, request.args.get("requests") == "1")
+    return jsonify(ok=True, source=source, lines=data)
+
+
+@app.route("/download/debug-log")
+def download_debug_log():
+    """One text file with everything useful for debugging."""
+    now = datetime.now()
+    parts = [f"MiniatureStudio debug log — {now.isoformat(timespec='seconds')}"]
+
+    def section(title, body):
+        parts.append(f"\n===== {title} =====\n{body}")
+
+    try:
+        section("System", json.dumps(api_system().get_json(), indent=2))
+    except Exception as exc:
+        section("System", f"unavailable: {exc}")
+    with state_lock:
+        state = {"recording": dict(recording), "stack": active_stack and {**active_stack, "exposure_lock": None}}
+    section("State", json.dumps(jsonable({**state, "saving": save_queue.status(),
+                                            "compressing": compressor.status(),
+                                            "camera_mode": getattr(camera, "mode", None),
+                                            "applied_controls": camera.applied}), indent=2))
+    section("Settings (config.json)", json.dumps(CONFIG, indent=2, default=str))
+    with jobs_lock:
+        recent = sorted(jobs.values(), key=lambda j: j["created"], reverse=True)[:15]
+    section("Recent jobs", "\n\n".join(
+        f"[{j['kind']}] {j['name']} — {j['status']}{' — ' + j['error'] if j.get('error') else ''}\n"
+        + "\n".join(j["log"][-80:]) for j in recent) or "none")
+    source, data = app_log_lines(5000, requests=False)
+    section(f"App log since boot (source: {source}, web requests left out)", "\n".join(data))
+    kernel = read_journal(400, kernel=True)
+    section("Kernel messages (camera, USB, power)", "\n".join(kernel) if kernel else "not readable")
+    body = "\n".join(parts) + "\n"
+    return Response(body, mimetype="text/plain; charset=utf-8", headers={
+        "Content-Disposition": f"attachment; filename=miniaturestudio-debug-{now:%Y%m%d_%H%M%S}.txt"})
+
+
 def power_blocker():
     with state_lock:
         if recording["active"]:
@@ -3062,6 +3148,7 @@ def main():
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger().addHandler(memory_log)
     if args.demo:
         os.environ["MINIATURESTUDIO_DEMO"] = "1"
     global save_queue, compressor, stack_queue

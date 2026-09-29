@@ -157,3 +157,7 @@ ol { padding-left: 20px; }
 #quick-box .numctl .num { width: 6em; }
 #quick-box select { padding: 3px 6px; }
 @media (min-width: 1700px) { #quick-controls { display: grid; grid-template-columns: 1fr 1fr; column-gap: 18px; } }
+
+pre.log.log-big { max-height: 420px; min-height: 120px; font-size: 11px; line-height: 1.35; }
+pre.log .lvl-error { color: var(--danger); }
+pre.log .lvl-warn { color: var(--warn); }

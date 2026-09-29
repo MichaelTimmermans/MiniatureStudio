@@ -14,4 +14,6 @@ $RUN_USER ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl pow
 EOF
 sudo chmod 0440 /etc/sudoers.d/miniaturestudio
 sudo visudo -cf /etc/sudoers.d/miniaturestudio >/dev/null
-echo "==> Mount helper and power permissions installed for $RUN_USER"
+# Read the systemd journal for the log window in System (includes libcamera's messages).
+getent group systemd-journal >/dev/null && sudo usermod -aG systemd-journal "$RUN_USER"
+echo "==> Mount helper, power and journal permissions installed for $RUN_USER"

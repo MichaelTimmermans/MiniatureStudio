@@ -51,7 +51,7 @@ document.querySelectorAll("#tabs button").forEach((btn) => btn.addEventListener(
   const loaders = {
     controls: [loadControls], stacks: [loadStacks], gallery: [loadGallery], jobs: [loadJobs],
     settings: [loadSettings, loadStorage, loadDrive, loadNas],
-    system: [loadSystem],
+    system: [loadSystem, loadLog],
   };
   (loaders[btn.dataset.tab] || []).forEach((fn) => fn().catch((e) => console.warn(e)));
 }));
@@ -682,6 +682,29 @@ $("#btn-reboot").addEventListener("click", () => guarded(() =>
 $("#btn-shutdown").addEventListener("click", () => guarded(() =>
   power("shutdown", "Shut down the Raspberry Pi? You need to unplug and replug the power to start it again.",
         "Shutting down — wait until the green LED stops blinking before unplugging."), "#system-message"));
+
+// ---------------------------------------------------------------- system: log window
+let logTimer = null;
+async function loadLog() {
+  clearTimeout(logTimer);
+  const lines = $("#log-lines").value, req = $("#log-requests").checked ? 1 : 0;
+  const r = await api(`/api/system/log?lines=${lines}&requests=${req}`);
+  const q = $("#log-filter").value.toLowerCase();
+  const view = $("#log-view");
+  const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 20;
+  view.replaceChildren(...r.lines.filter((l) => !q || l.toLowerCase().includes(q)).map((l) => {
+    const cls = /\b(ERROR|CRITICAL|Traceback)\b/.test(l) ? "lvl-error" : /\bWARN(ING)?\b/.test(l) ? "lvl-warn" : null;
+    return el("div", { class: cls }, l);
+  }));
+  if (atBottom) view.scrollTop = view.scrollHeight;  // follow new lines unless you scrolled up
+  $("#log-source").textContent = r.source === "journal"
+    ? "Source: systemd journal (includes camera/libcamera messages)."
+    : "Source: app memory (the systemd journal is not readable for this user; camera driver messages are missing).";
+  if ($("#log-auto").checked && !$("#tab-system").hidden) logTimer = setTimeout(() => loadLog().catch(() => {}), 4000);
+}
+["#log-lines", "#log-requests", "#log-auto"].forEach((id) => $(id).addEventListener("change", () => loadLog().catch(() => {})));
+$("#log-filter").addEventListener("input", () => loadLog().catch(() => {}));
+$("#btn-log-refresh").addEventListener("click", () => loadLog().catch((e) => { $("#log-source").textContent = e.message; }));
 
 // ---------------------------------------------------------------- viewer
 const isTiff = (name) => /\.tiff?$/i.test(name);
