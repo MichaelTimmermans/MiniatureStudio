@@ -324,7 +324,14 @@ function queueControl(name, value) {
   pendingTimer = setTimeout(async () => {
     const body = { ...pending };
     for (const k of Object.keys(pending)) delete pending[k];
-    try { await api("/api/controls", "POST", body); $("#live").classList.remove("error"); }
+    try {
+      const r = await api("/api/controls", "POST", body);
+      $("#live").classList.remove("error");
+      if (r.switched && r.switched.length) {
+        $("#live").textContent = `Switched to manual: ${r.switched.join(", ")}`;
+        loadControls().catch(() => {});
+      }
+    }
     catch (e) { $("#live").textContent = e.message; $("#live").classList.add("error"); }
   }, 250);
 }

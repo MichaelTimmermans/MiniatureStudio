@@ -189,7 +189,9 @@ ENUM_CONTROLS = {
 ARRAY_CONTROLS = {"ColourGains": 2, "FrameDurationLimits": 2, "ColourCorrectionMatrix": 9}
 
 # Actions rather than settings; handled by dedicated buttons or not useful.
-HIDDEN_CONTROLS = {"AfTrigger", "AfPause", "AfWindows"}
+# Actions, and controls for other hardware (AI camera tensors, multi-camera sync).
+HIDDEN_CONTROLS = {"AfTrigger", "AfPause", "AfWindows", "CnnEnableInputTensor", "CnnInputTensor",
+                   "CnnInputTensorInfo", "StatsOutputEnable", "SyncMode", "SyncFrames"}
 
 
 def jsonable(value):
@@ -349,7 +351,8 @@ class RealCamera:
 
     def _with_controls(self, cfg):
         # Controls in the config apply from the very first frame after start().
-        cfg["controls"] = {**(cfg.get("controls") or {}), **self.applied}
+        cfg["controls"] = {**(cfg.get("controls") or {}),
+                           **effective_controls(self.applied, self.picam2.camera_controls)}
         return cfg
 
     def _still_config(self, with_lores=True):
@@ -382,7 +385,7 @@ class RealCamera:
     def _apply_saved_controls(self):
         if self.applied:
             try:
-                self.picam2.set_controls(self.applied)
+                self.picam2.set_controls(effective_controls(self.applied, self.picam2.camera_controls))
             except Exception as exc:  # e.g. a control invalid in video mode
                 log.warning("Could not re-apply controls: %s", exc)
 
@@ -442,9 +445,8 @@ class RealCamera:
     @property
     def auto_adjusting(self):
         """True while auto exposure or auto white balance can still change the image."""
-        a = self.applied
-        auto_exposure = a.get("AeEnable", True) is not False and a.get("ExposureTimeMode", 0) != 1
-        return auto_exposure or a.get("AwbEnable", True) is not False
+        a, cc = self.applied, self.picam2.camera_controls
+        return exposure_is_auto(a, cc) or gain_is_auto(a, cc) or a.get("AwbEnable", True) is not False
 
     def grab(self):
         """Take one full-resolution frame -> (PIL image, metadata). Saving happens elsewhere."""
@@ -465,12 +467,14 @@ class RealCamera:
             # After a mode switch auto exposure / white balance need a few frames to
             # settle; the first frame can be a stop off (seen in real stacks). Wait until
             # two consecutive frames agree, at most 6 frames. Manual settings: no wait.
-            while switched and self.auto_adjusting and skipped < 6:
+            while switched and self.auto_adjusting and skipped < 10:
                 md = req.get_metadata()
                 req.release()
                 req = self.picam2.capture_request()
                 skipped += 1
-                if exposure_settled(md, req.get_metadata()):
+                new_md = req.get_metadata()
+                converged = ae_converged(new_md)
+                if converged or (converged is None and skipped >= 3 and exposure_settled(md, new_md)):
                     break
             try:
                 image = req.make_image("main")  # copies the buffer
@@ -554,6 +558,45 @@ class RealCamera:
             self.picam2.close()
         except Exception:
             pass
+
+
+def exposure_is_auto(controls, cc):
+    """Auto exposure time? Newer libcamera: ExposureTimeMode (0 auto, 1 manual); older: AeEnable."""
+    if "ExposureTimeMode" in cc:
+        return controls.get("ExposureTimeMode", 0) != 1
+    return controls.get("AeEnable", True) is not False
+
+
+def gain_is_auto(controls, cc):
+    if "AnalogueGainMode" in cc:
+        return controls.get("AnalogueGainMode", 0) != 1
+    return controls.get("AeEnable", True) is not False
+
+
+def effective_controls(controls, cc):
+    """Drop manual values that do not apply while the matching setting is automatic.
+
+    Stale ExposureTime / AnalogueGain values (from a slider, a preset or an old lock)
+    otherwise fight auto exposure: seen as a preview at 6.7 ms with gain 16 and a photo
+    started at gain 1.0, four stops darker than the preview."""
+    out = dict(controls)
+    if exposure_is_auto(out, cc):
+        out.pop("ExposureTime", None)
+    if gain_is_auto(out, cc):
+        out.pop("AnalogueGain", None)
+    if out.get("AwbEnable", True) is not False:
+        out.pop("ColourGains", None)
+        out.pop("ColourTemperature", None)
+    return out
+
+
+def ae_converged(md):
+    """libcamera's own verdict when available (AeState 2 = converged, or AeLocked)."""
+    if "AeState" in md:
+        return md["AeState"] == 2
+    if "AeLocked" in md:
+        return bool(md["AeLocked"])
+    return None
 
 
 def exposure_summary(md):
@@ -1108,7 +1151,8 @@ def open_camera(index=None, stream=None):
 def apply_control_values(cam, values, reset_first=False):
     """Coerce and apply a {control: value} dict; unknown controls are skipped."""
     coerced = {}
-    for name, value in (values or {}).items():
+    values = effective_controls(values or {}, cam.camera_controls)
+    for name, value in values.items():
         if name in cam.camera_controls and name not in HIDDEN_CONTROLS:
             try:
                 coerced[name] = coerce_control(name, value, cam.camera_controls[name])
@@ -1824,16 +1868,40 @@ def api_controls():
             to_set[name] = coerce_control(name, value, info)
         except (TypeError, ValueError) as exc:
             errors[name] = str(exc)
+    switched = []
     if to_set:
+        cc = camera.camera_controls
+        new_libcamera = "ExposureTimeMode" in cc
+        # Setting a manual value means "manual": switch the matching mode, like a real camera.
+        if "ExposureTime" in to_set and not ({"ExposureTimeMode", "AeEnable"} & set(body)):
+            key, value = ("ExposureTimeMode", 1) if new_libcamera else ("AeEnable", False)
+            if key in cc and camera.applied.get(key) != value:
+                to_set[key] = value
+                switched.append(key)
+        if "AnalogueGain" in to_set and not ({"AnalogueGainMode", "AeEnable"} & set(body)):
+            key, value = ("AnalogueGainMode", 1) if "AnalogueGainMode" in cc else ("AeEnable", False)
+            if key in cc and camera.applied.get(key) != value:
+                to_set[key] = value
+                switched.append(key)
+        if ({"ColourGains", "ColourTemperature"} & set(to_set)) and "AwbEnable" not in body \
+                and "AwbEnable" in cc and camera.applied.get("AwbEnable") is not False:
+            to_set["AwbEnable"] = False
+            switched.append("AwbEnable")
         with camera_lock:
             try:
                 camera.set_controls(to_set)
             except Exception as exc:
                 return jsonify(ok=False, errors={"_": str(exc)}), 400
+        # Back to automatic: forget the manual values, so they cannot interfere later.
+        cc = camera.camera_controls
+        for name in [n for n in ("ExposureTime", "AnalogueGain", "ColourGains", "ColourTemperature")
+                     if n in camera.applied]:
+            if name not in effective_controls(camera.applied, cc):
+                camera.applied.pop(name)
         if CONFIG.get("persist_controls", True):
             CONFIG.setdefault("controls", {})[camera.model] = jsonable(camera.applied)
             save_config()
-    return jsonify(ok=not errors, applied=jsonable(camera.applied), errors=errors)
+    return jsonify(ok=not errors, applied=jsonable(camera.applied), errors=errors, switched=switched)
 
 
 @app.route("/api/controls/lock_exposure", methods=["POST"])

@@ -7,14 +7,14 @@ const HELP = {
   AeEnable: "Automatic exposure. On: the camera chooses exposure time and gain itself. Off: your ExposureTime and AnalogueGain are used exactly. For a static model under fixed lights, manual (off) gives identical frames — best for stacking.",
   ExposureTimeMode: "Newer libcamera: Auto lets the camera pick the exposure time, Manual uses your ExposureTime.",
   AnalogueGainMode: "Newer libcamera: Auto lets the camera pick the gain, Manual uses your AnalogueGain.",
-  ExposureTime: "Shutter time in microseconds (1,000,000 µs = 1 s). Longer = brighter image with less noise. The model does not move, so long exposures (1/15 s or longer) are fine. Only used when auto exposure is off.",
-  AnalogueGain: "Sensor amplification, like ISO. 1.0 = the least noise. Raise it only if the exposure time cannot go longer; high gain gives speckles in the black backdrop.",
+  ExposureTime: "Shutter time in microseconds (1,000,000 µs = 1 s). Longer = brighter image with less noise. The model does not move, so long exposures (1/15 s or longer) are fine. Changing it switches exposure to manual; turn auto exposure back on to let the camera decide again.",
+  AnalogueGain: "Sensor amplification, like ISO. 1.0 = the least noise. Raise it only if the exposure time cannot go longer; high gain gives speckles in the black backdrop. Changing it switches the gain to manual.",
   ExposureValue: "Exposure compensation for auto exposure, in stops. -1 = half as bright, +1 = twice as bright. Handy against blown highlights while keeping auto exposure.",
   AeMeteringMode: "Which part of the image auto exposure looks at. CentreWeighted: mostly the centre (good for a centred model). Spot: only the very centre. Matrix: the whole frame (a black backdrop then makes it expose too bright).",
   AeConstraintMode: "How auto exposure treats extremes. Normal: balanced. Highlight: protects bright parts from blowing out (useful for white/metallic paint). Shadows: lifts dark parts.",
   AeExposureMode: "Whether auto exposure prefers short (Short) or long (Long) exposure times when it has a choice. Long = less gain, less noise — suits a static model.",
   AeFlickerMode: "Cancels flicker from mains-powered lights (banding or brightness pulsing). Manual: uses AeFlickerPeriod. Auto: detects it (not supported everywhere).",
-  AeFlickerPeriod: "Flicker period for AeFlickerMode Manual, in µs. Europe (50 Hz mains): 10000. USA (60 Hz): 8333.",
+  AeFlickerPeriod: "Flicker period for AeFlickerMode Manual, in µs: half a mains cycle. Europe (50 Hz mains): 10000. USA (60 Hz): 8333. Other values only restrict auto exposure needlessly.",
   FrameDurationLimits: "Minimum and maximum time per frame in µs. The maximum also limits the longest exposure time. Normally leave as is.",
   DigitalGain: "Extra brightness applied after the sensor. Adds no detail; prefer ExposureTime.",
 
@@ -52,7 +52,7 @@ const HELP = {
 
   // ---------------------------------------------------------------- Settings: camera & performance
   lock_exposure_in_stacks: "At the start of a stack, freeze auto exposure and white balance so every frame matches. Frames that differ in brightness or colour cause halos. Auto returns after the stack.",
-  preview_mode: "fast: the live view uses a quick half-resolution sensor mode and switches to full resolution for each capture — smooth preview; with auto exposure/white balance the photo waits a moment until they settle. full: preview and photo use the very same sensor mode — the preview shows exactly what you get, but it is slower. Long exposure times slow any preview down (1/5 s = 5 frames per second).",
+  preview_mode: "fast: the live view uses a quick half-resolution sensor mode and switches to full resolution for each capture — smooth preview; with auto exposure/white balance the photo waits a moment until they settle. Each switch reserves ~55 MB of camera memory: on a 1 GB Pi 3B that can take several seconds when memory is busy. full: preview and photo use the very same sensor mode — no switch, near-instant captures and exactly what you see, but a slower preview (max ~10 frames per second). Long exposure times slow any preview down (1/5 s = 5 frames per second).",
   save_queue: "How many captured frames may wait to be written at once. Each one takes ~36 MB of RAM (12 MP). On a 1 GB Pi 3B keep 2.",
   compress_workers: "Background workers that compress TIFF to PNG. 0 = one per CPU core minus one. They run at low priority. Applies after a restart.",
 
