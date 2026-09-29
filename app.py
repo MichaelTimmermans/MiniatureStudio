@@ -719,6 +719,9 @@ class Compressor:
         from PIL import Image
 
         while True:
+            # focus-stack needs all the RAM it can get (1 GB on a Pi 3B): pause meanwhile.
+            while focus_stack_running():
+                time.sleep(3)
             with self.lock:
                 while not (item := next((i for i in self.items if i["raw"] not in self.busy), None)):
                     self.wake.wait()
@@ -755,6 +758,11 @@ class Compressor:
     def status(self):
         with self.lock:
             return {"queued": len(self.items), "active": len(self.busy), "last_error": self.last_error}
+
+
+def focus_stack_running():
+    with jobs_lock:
+        return any(j["kind"] == "focus-stack" and j["status"] == "running" for j in jobs.values())
 
 
 def stack_busy(name):
@@ -960,11 +968,12 @@ def stack_outputs(stack_dir, name):
 def build_focus_stack_cmd(binary, stack_dir, name, frames, opts):
     ext = {"jpg": "jpg", "jpeg": "jpg", "tif": "tif", "tiff": "tif"}.get(opts.get("output_format", "png"), "png")
     output = stack_dir / f"{name}_stacked.{ext}"
-    cmd = [binary, f"--output={output}"]
+    # Relative names: focus-stack runs inside the stack folder and truncates long paths in its log.
+    cmd = [binary, f"--output={output.name}"]
     if opts.get("depthmap"):
-        cmd.append(f"--depthmap={stack_dir / f'{name}_depthmap.png'}")
+        cmd.append(f"--depthmap={name}_depthmap.png")
     if opts.get("view3d"):
-        cmd.append(f"--3dview={stack_dir / f'{name}_3dview.png'}")
+        cmd.append(f"--3dview={name}_3dview.png")
     flags = {
         "global_align": "--global-align",
         "full_resolution_align": "--full-resolution-align",
@@ -984,14 +993,52 @@ def build_focus_stack_cmd(binary, stack_dir, name, frames, opts):
         "reference": "--reference",
     }
     opts = dict(opts)
+    if opts.get("threads") in (None, ""):
+        opts["threads"] = auto_threads()
     if str(opts.get("batchsize")) == "0":
         opts["batchsize"] = len(frames)  # all frames in one merge batch
     for key, flag in values.items():
         if opts.get(key) not in (None, ""):
             cmd.append(f"{flag}={opts[key]}")
     cmd += shlex.split(opts.get("extra_args") or "")
-    cmd += [str(f) for f in frames]
+    cmd += [f.name for f in frames]
     return cmd, output
+
+
+OOM_EXIT_CODES = (-9, 137)  # SIGKILL: the kernel's out-of-memory killer
+
+
+def meminfo_mb(key):
+    try:
+        with open("/proc/meminfo", encoding="ascii") as f:
+            for line in f:
+                if line.startswith(key + ":"):
+                    return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return 0
+
+
+def auto_threads():
+    """focus-stack holds several full-size float images per thread: scale with RAM, not cores."""
+    ram = meminfo_mb("MemTotal") or 4096
+    cores = os.cpu_count() or 2
+    if ram < 1500:
+        return 1  # Pi 3B (1 GB)
+    if ram < 3000:
+        return min(2, cores)
+    return cores
+
+
+def run_focus_stack_once(job, binary, stack_dir, name, frames, opts):
+    cmd, output = build_focus_stack_cmd(binary, stack_dir, name, frames, opts)
+    job_log(job, "$ " + " ".join(shlex.quote(c) for c in cmd))
+    proc = subprocess.Popen(cmd, cwd=stack_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+    job["pid"] = proc.pid
+    for line in proc.stdout:
+        job_log(job, line)
+    return proc.wait(), output
 
 
 def run_focus_stack(job, name, overrides):
@@ -1009,16 +1056,18 @@ def run_focus_stack(job, name, overrides):
     opts = {**CONFIG["focus_stack"], **(overrides or {})}
     for old in stack_dir.glob(f"{name}_stacked.*"):
         old.unlink()
-    cmd, output = build_focus_stack_cmd(binary, stack_dir, name, frames, opts)
-    job_log(job, "$ " + " ".join(shlex.quote(c) for c in cmd))
     started = time.time()
-    proc = subprocess.Popen(cmd, cwd=stack_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1)
-    job["pid"] = proc.pid
-    for line in proc.stdout:
-        job_log(job, line)
-    rc = proc.wait()
+    rc, output = run_focus_stack_once(job, binary, stack_dir, name, frames, opts)
+    if rc in OOM_EXIT_CODES and not job.get("cancel"):
+        # Killed by the kernel's out-of-memory killer: retry once as lean as possible.
+        job_log(job, "focus-stack ran out of memory — retrying with threads=1, batchsize=2 (slower)")
+        rc, output = run_focus_stack_once(job, binary, stack_dir, name, frames,
+                                          {**opts, "threads": 1, "batchsize": 2})
     (stack_dir / "process.log").write_text("\n".join(job["log"]), encoding="utf-8")
+    if rc in OOM_EXIT_CODES:
+        raise RuntimeError(f"focus-stack ran out of memory ({meminfo_mb('MemTotal')} MB RAM, "
+                           f"{meminfo_mb('SwapTotal')} MB swap) — enlarge the swap (see README) "
+                           "or use fewer frames")
     if rc != 0:
         raise RuntimeError(f"focus-stack exited with code {rc}")
     if not output.exists():
