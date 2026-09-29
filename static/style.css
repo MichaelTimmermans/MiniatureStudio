@@ -122,3 +122,13 @@ ol { padding-left: 20px; }
 #clip-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; image-rendering: pixelated; }
 #histogram-box { margin-top: 8px; }
 #histogram { width: 100%; max-width: 512px; height: 140px; display: block; background: #0b0c0e; border: 1px solid var(--border); }
+
+.stats { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 8px 0 14px; align-items: center; }
+.stats dt { color: var(--muted); font-size: 12px; }
+.stats dd { margin: 0; }
+.bar { height: 8px; background: var(--card); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin-top: 3px; }
+.bar > span { display: block; height: 100%; background: var(--accent); }
+.bar.warn > span { background: var(--warn); }
+.bar.crit > span { background: var(--danger); }
+.alert { border: 1px solid var(--danger); color: var(--danger); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+.alert.past { border-color: var(--warn); color: var(--warn); }

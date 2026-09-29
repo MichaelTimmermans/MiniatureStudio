@@ -2613,6 +2613,140 @@ def api_storage_move():
 
 
 # --------------------------------------------------------------------------
+# Routes — system: Raspberry Pi stats, restart / reboot / shutdown
+# --------------------------------------------------------------------------
+
+def read_text(path, default=None):
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace").strip().strip("\x00")
+    except OSError:
+        return default
+
+
+_cpu_sample = {}
+
+
+def cpu_usage_percent():
+    """CPU busy % since the previous call (from /proc/stat)."""
+    line = read_text("/proc/stat", "").splitlines()[:1]
+    if not line:
+        return None
+    values = [int(v) for v in line[0].split()[1:]]
+    idle, total = values[3] + values[4], sum(values)
+    prev = _cpu_sample.get("last")
+    _cpu_sample["last"] = (idle, total)
+    if not prev or total == prev[1]:
+        return None
+    return round(100 * (1 - (idle - prev[0]) / (total - prev[1])), 1)
+
+
+# Bits of `vcgencmd get_throttled` (Raspberry Pi firmware).
+THROTTLE_FLAGS = {0: "under-voltage", 1: "ARM frequency capped", 2: "throttled", 3: "soft temperature limit"}
+
+
+def throttle_state():
+    try:
+        out = subprocess.run(["vcgencmd", "get_throttled"], capture_output=True, text=True, timeout=5).stdout
+        value = int(out.strip().split("=")[1], 16)
+    except Exception:
+        return None
+    return {"raw": hex(value),
+            "now": [name for bit, name in THROTTLE_FLAGS.items() if value & (1 << bit)],
+            "since_boot": [name for bit, name in THROTTLE_FLAGS.items() if value & (1 << (bit + 16))]}
+
+
+def os_name():
+    for line in (read_text("/etc/os-release", "") or "").splitlines():
+        if line.startswith("PRETTY_NAME="):
+            return line.split("=", 1)[1].strip('"')
+    import platform
+    return platform.platform()
+
+
+@app.route("/api/system")
+def api_system():
+    import platform
+
+    uptime = read_text("/proc/uptime")
+    temp = read_text("/sys/class/thermal/thermal_zone0/temp")
+    freq = read_text("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq")
+    try:
+        load = [round(v, 2) for v in os.getloadavg()]
+    except (AttributeError, OSError):
+        load = None
+    try:
+        ips = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=5).stdout.split()
+    except Exception:
+        ips = []
+    disks = {"sd": disk_free(BASE_DIR)}
+    if os.path.ismount(USB_MOUNT):
+        disks["usb"] = disk_free(USB_MOUNT)
+    try:
+        version = git("describe", "--tags", "--always", "--dirty")
+    except Exception:
+        version = "unknown"
+    return jsonify(
+        ok=True,
+        model=read_text("/proc/device-tree/model") or platform.machine(),
+        os=os_name(),
+        kernel=platform.release(),
+        python=platform.python_version(),
+        hostname=platform.node(),
+        ips=ips,
+        uptime_s=int(float(uptime.split()[0])) if uptime else None,
+        cpu={"cores": os.cpu_count(), "usage": cpu_usage_percent(), "load": load,
+             "freq_mhz": int(freq) // 1000 if freq else None,
+             "temp_c": round(int(temp) / 1000, 1) if temp else None},
+        memory={"total_mb": meminfo_mb("MemTotal"), "available_mb": meminfo_mb("MemAvailable"),
+                "swap_total_mb": meminfo_mb("SwapTotal"), "swap_free_mb": meminfo_mb("SwapFree")},
+        throttle=throttle_state(),
+        disks=disks,
+        app={"version": version, "camera": camera.model, "demo": camera.demo,
+             "stacker": stack_method(CONFIG["focus_stack"])[0]},
+    )
+
+
+def power_blocker():
+    with state_lock:
+        if recording["active"]:
+            return "a video is recording — stop it first"
+        if active_stack:
+            return "a stack is open — finish it first"
+    return None
+
+
+def power_action(action):
+    """Wait for pending writes, then restart the app, reboot or power off."""
+    save_queue.wait_idle()
+    if hasattr(os, "sync"):
+        os.sync()
+    if action == "restart":
+        os._exit(0)  # systemd (Restart=always) starts the app again
+    cmd = ["sudo", "-n", "/usr/bin/systemctl", "reboot" if action == "reboot" else "poweroff"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        log.error("%s failed: %s", action, result.stderr.strip())
+
+
+@app.route("/api/system/<action>", methods=["POST"])
+def api_system_power(action):
+    if action not in ("restart", "reboot", "shutdown"):
+        abort(404)
+    blocker = power_blocker()
+    if blocker:
+        return jsonify(ok=False, error=blocker), 409
+    if os.name != "posix":
+        return jsonify(ok=False, error="only available on the Pi"), 400
+    if action != "restart" and subprocess.run(["sudo", "-n", "-l", "/usr/bin/systemctl", "reboot"],
+                                              capture_output=True).returncode != 0:
+        return jsonify(ok=False, error="no permission — run ./install.sh again (adds the sudo rule)"), 403
+    running = [j["kind"] for j in jobs.values() if j["status"] in ("queued", "running")]
+    log.warning("System %s requested (running jobs: %s)", action, running or "none")
+    threading.Timer(1.0, power_action, args=(action,)).start()
+    return jsonify(ok=True, action=action, interrupted_jobs=running)
+
+
+# --------------------------------------------------------------------------
 # Routes — self-update (git based, see update.sh)
 # --------------------------------------------------------------------------
 

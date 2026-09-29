@@ -44,6 +44,7 @@
       <button data-tab="stacks">Stacks</button>
       <button data-tab="gallery">Gallery</button>
       <button data-tab="jobs">Jobs</button>
+      <button data-tab="system">System</button>
       <button data-tab="settings">Settings</button>
     </nav>
 
@@ -152,6 +153,23 @@
         <button id="btn-jobs-clear">Clear finished jobs</button>
       </div>
       <div id="jobs"></div>
+    </div>
+
+    <!-- System -->
+    <div class="tab" id="tab-system" hidden>
+      <div id="system-warnings"></div>
+      <div id="system-stats" class="stats"></div>
+      <fieldset>
+        <legend>Power</legend>
+        <div class="row">
+          <button id="btn-restart-app">Restart app</button>
+          <button id="btn-reboot" class="danger">Reboot Pi</button>
+          <button id="btn-shutdown" class="danger">Shut down Pi</button>
+        </div>
+        <div class="muted small">Pending captures are written first. Shut down before unplugging the power
+          — pulling the plug can corrupt the SD card.</div>
+        <div id="system-message" class="status small"></div>
+      </fieldset>
     </div>
 
     <!-- Settings -->

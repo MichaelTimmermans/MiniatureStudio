@@ -51,6 +51,7 @@ document.querySelectorAll("#tabs button").forEach((btn) => btn.addEventListener(
   const loaders = {
     controls: [loadControls], stacks: [loadStacks], gallery: [loadGallery], jobs: [loadJobs],
     settings: [loadSettings, loadStorage, loadDrive, loadNas],
+    system: [loadSystem],
   };
   (loaders[btn.dataset.tab] || []).forEach((fn) => fn().catch((e) => console.warn(e)));
 }));
@@ -551,6 +552,69 @@ $("#btn-lock-exposure").addEventListener("click", () => guarded(async () => {
     ? "Exposure and white balance locked: " + Object.entries(r.locked).map(([k, v]) => `${k}=${Array.isArray(v) ? v.map((x) => +(+x).toFixed(3)).join("/") : +(+v).toFixed(3)}`).join(", ")
     : "Already manual — nothing to lock.";
 }, "#live"));
+
+// ---------------------------------------------------------------- system: Pi stats & power
+const mb = (n) => n >= 1024 ? (n / 1024).toFixed(1) + " GB" : n + " MB";
+function uptimeText(s) {
+  if (s == null) return "–";
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return (d ? `${d}d ` : "") + `${h}h ${m}m`;
+}
+function meter(used, total, text, warnAt = 0.75, critAt = 0.9) {
+  const f = total ? used / total : 0;
+  return el("div", {}, text, el("div", { class: "bar" + (f >= critAt ? " crit" : f >= warnAt ? " warn" : "") },
+    el("span", { style: `width:${Math.min(100, f * 100).toFixed(1)}%` })));
+}
+let systemTimer = null;
+async function loadSystem() {
+  clearTimeout(systemTimer);
+  const s = await api("/api/system");
+  const warn = $("#system-warnings");
+  warn.replaceChildren();
+  if (s.throttle?.now.length) {
+    warn.append(el("div", { class: "alert" }, `Right now: ${s.throttle.now.join(", ")}. ` +
+      (s.throttle.now.includes("under-voltage") ? "The power supply is too weak — use the official 5.1 V / 2.5 A (Pi 3B) supply and a short cable." : "The Pi is too hot — improve cooling.")));
+  } else if (s.throttle?.since_boot.length) {
+    warn.append(el("div", { class: "alert past" }, `Since boot: ${s.throttle.since_boot.join(", ")} happened at some point.` +
+      (s.throttle.since_boot.includes("under-voltage") ? " Check the power supply." : "")));
+  }
+  const m = s.memory, c = s.cpu;
+  const memUsed = m.total_mb - m.available_mb, swapUsed = m.swap_total_mb - m.swap_free_mb;
+  const rows = [
+    ["Model", s.model], ["OS", s.os], ["Kernel", s.kernel], ["Hostname", `${s.hostname} (${s.ips.join(", ") || "no IP"})`],
+    ["Uptime", uptimeText(s.uptime_s)],
+    ["CPU", `${c.cores} cores${c.freq_mhz ? ` @ ${c.freq_mhz} MHz` : ""} — ${c.usage ?? "…"}% busy` + (c.load ? `, load ${c.load.join(" / ")}` : "")],
+    ["Temperature", c.temp_c != null ? meter(c.temp_c, 85, `${c.temp_c} °C`, 0.8, 0.94) : "–"],
+    ["Memory", meter(memUsed, m.total_mb, `${mb(memUsed)} used of ${mb(m.total_mb)}`)],
+    ["Swap", m.swap_total_mb ? meter(swapUsed, m.swap_total_mb, `${mb(swapUsed)} used of ${mb(m.swap_total_mb)}`)
+      : el("span", { class: "error" }, "none — focus stacking may run out of memory")],
+  ];
+  for (const [name, d] of Object.entries(s.disks)) {
+    if (d) rows.push([name === "sd" ? "SD card" : "USB disk",
+      meter(d.total - d.free, d.total, `${gb(d.free)} free of ${gb(d.total)}`, 0.85, 0.95)]);
+  }
+  rows.push(["App", `${s.app.version} — camera ${s.app.camera}${s.app.demo ? " (demo)" : ""}, stacking: ${s.app.stacker || "none"}`],
+            ["Python", s.python]);
+  $("#system-stats").replaceChildren(...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v ?? "–")]));
+  if (!$("#tab-system").hidden) systemTimer = setTimeout(() => loadSystem().catch(() => {}), 3000);
+}
+
+async function power(action, question, after) {
+  if (!confirm(question)) return;
+  const r = await api(`/api/system/${action}`, "POST", {});
+  say(after + (r.interrupted_jobs.length ? ` (interrupted: ${r.interrupted_jobs.join(", ")})` : ""), false, "#system-message");
+  if (action !== "shutdown") {
+    const back = async () => { try { await api("/api/version"); location.reload(); } catch (_) { setTimeout(back, 3000); } };
+    setTimeout(back, action === "reboot" ? 30000 : 4000);
+  }
+}
+$("#btn-restart-app").addEventListener("click", () => guarded(() =>
+  power("restart", "Restart the MiniatureStudio app?", "Restarting the app…"), "#system-message"));
+$("#btn-reboot").addEventListener("click", () => guarded(() =>
+  power("reboot", "Reboot the Raspberry Pi? This takes about a minute.", "Rebooting — the page reloads when the Pi is back…"), "#system-message"));
+$("#btn-shutdown").addEventListener("click", () => guarded(() =>
+  power("shutdown", "Shut down the Raspberry Pi? You need to unplug and replug the power to start it again.",
+        "Shutting down — wait until the green LED stops blinking before unplugging."), "#system-message"));
 
 // ---------------------------------------------------------------- viewer
 const isTiff = (name) => /\.tiff?$/i.test(name);
