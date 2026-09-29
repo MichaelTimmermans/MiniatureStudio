@@ -1819,6 +1819,31 @@ def api_job(job_id):
     return jsonify(job)
 
 
+FINISHED = ("done", "error")
+
+
+@app.route("/api/jobs/<job_id>", methods=["DELETE"])
+def api_job_delete(job_id):
+    """Remove a finished job from the list (running ones can only be cancelled)."""
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            abort(404)
+        if job["status"] not in FINISHED:
+            return jsonify(ok=False, error="job is still running — cancel it first"), 409
+        del jobs[job_id]
+    return jsonify(ok=True)
+
+
+@app.route("/api/jobs/clear", methods=["POST"])
+def api_jobs_clear():
+    with jobs_lock:
+        finished = [jid for jid, j in jobs.items() if j["status"] in FINISHED]
+        for jid in finished:
+            del jobs[jid]
+    return jsonify(ok=True, removed=len(finished))
+
+
 @app.route("/api/stacks")
 def api_stacks():
     base = data_dir("stacks")

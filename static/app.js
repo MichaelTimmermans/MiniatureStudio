@@ -257,7 +257,11 @@ async function loadJobs() {
         el("button", { onclick: async () => {
           const full = await api(`/api/jobs/${j.id}`);
           box.querySelector(`pre[data-id="${j.id}"]`).textContent = full.log.join("\n");
-        } }, "Log")),
+        } }, "Log"),
+        j.status === "done" || j.status === "error"
+          ? el("button", { class: "danger", title: "Remove this job from the list",
+              onclick: () => api(`/api/jobs/${j.id}`, "DELETE").then(loadJobs).catch((e) => alert(e.message)) }, "Delete")
+          : null),
       j.error ? el("div", { class: "error small" }, j.error) : null,
       el("pre", { "data-id": j.id, class: "log" }, j.log.join("\n"))));
   }
@@ -621,6 +625,10 @@ async function loadStacks() {
 }
 $("#btn-stacks-refresh").addEventListener("click", loadStacks);
 $("#btn-jobs-refresh").addEventListener("click", loadJobs);
+$("#btn-jobs-clear").addEventListener("click", async () => {
+  await api("/api/jobs/clear", "POST", {}).catch((e) => alert(e.message));
+  loadJobs();
+});
 
 // ---------------------------------------------------------------- settings
 const FOCUS_STACK_FIELDS = {
@@ -918,7 +926,16 @@ $("#btn-update-apply").addEventListener("click", () => guarded(async () => {
 
 // ---------------------------------------------------------------- init
 (async function init() {
-  try { info = await api("/api/camera_info"); } catch (e) { say(e.message, true); }
+  // Right after an update the app may still be restarting: retry instead of showing
+  // "focus-stack missing" and friends based on an empty answer.
+  for (let attempt = 0; ; attempt++) {
+    try { info = await api("/api/camera_info"); break; } catch (e) {
+      if (attempt >= 15) { say(e.message, true); break; }
+      say("Waiting for the app to start…");
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  if ($("#message").textContent === "Waiting for the app to start…") say("");
   $("#btn-af").hidden = !info.has_autofocus;
   $("#sweep-box").hidden = !info.has_autofocus;
   $("#stack-autoprocess-label").hidden = !!info.has_autofocus;  // AF: always auto-stacked
