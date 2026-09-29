@@ -409,7 +409,7 @@ function controlRow(c) {
     onclick: () => togglePin(c.name) }, pinned ? "★" : "☆");
   const unit = CONTROL_UNITS[c.name];
   return el("div", { class: "control", "data-name": c.name.toLowerCase() },
-    el("label", { title: `${JSON.stringify(c.min)} … ${JSON.stringify(c.max)}` }, unit ? `${c.name} (${unit})` : c.name),
+    el("label", { title: `${JSON.stringify(c.min)} … ${JSON.stringify(c.max)}` }, unit ? `${c.name} (${unit})` : c.name, infoIcon(c.name)),
     input, reset, pin);
 }
 
@@ -955,8 +955,33 @@ function fieldFor(key, meta, value) {
   } else {
     input = el("input", { type: meta.type || "text", step: meta.step || (meta.type === "number" ? "any" : null), "data-key": key, value: value ?? "" });
   }
-  return el("label", { class: meta.type === "checkbox" ? "check" : "block" }, meta.type === "checkbox" ? [input, " " + meta.label] : [meta.label, input]);
+  const info = infoIcon(key);
+  return el("label", { class: meta.type === "checkbox" ? "check" : "block" },
+    meta.type === "checkbox" ? [input, " " + meta.label, info] : [el("span", {}, meta.label, info), input]);
 }
+
+// ⓘ next to a setting: hover shows the text on a computer, a tap/click opens a
+// small popover (touch screens have no hover).
+const helpPop = el("div", { id: "help-pop", role: "tooltip", hidden: true });
+document.body.append(helpPop);
+function infoIcon(key) {
+  const text = typeof HELP !== "undefined" && HELP[key];
+  if (!text) return null;
+  return el("button", { class: "info", type: "button", "aria-label": `What is ${key}?`, title: text,
+    onclick: (e) => { e.preventDefault(); e.stopPropagation(); showHelp(e.currentTarget, text); } }, "ⓘ");
+}
+function showHelp(anchor, text) {
+  if (!helpPop.hidden && helpPop.textContent === text) { helpPop.hidden = true; return; }
+  helpPop.textContent = text;
+  helpPop.hidden = false;
+  const r = anchor.getBoundingClientRect(), w = Math.min(340, window.innerWidth - 24);
+  helpPop.style.width = w + "px";
+  helpPop.style.left = Math.max(12, Math.min(r.left - 12, window.innerWidth - w - 12)) + "px";
+  const below = r.bottom + 6, h = helpPop.offsetHeight;
+  helpPop.style.top = (below + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 6) : below) + "px";
+}
+document.addEventListener("click", (e) => { if (!helpPop.contains(e.target)) helpPop.hidden = true; });
+window.addEventListener("scroll", () => { helpPop.hidden = true; }, true);
 
 const SETTINGS_SECTIONS = [
   ["Files", null, {

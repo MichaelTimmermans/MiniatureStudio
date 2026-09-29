@@ -168,3 +168,9 @@ ol { padding-left: 20px; }
   .control .numctl, .control .array, .control select { grid-column: 1 / 2; }
   button, .button, select { min-height: 38px; }
 }
+
+.info { background: none; border: none; color: var(--accent); padding: 0 4px; font-size: 13px; cursor: help; vertical-align: baseline; }
+.info:hover, .info:focus-visible { color: var(--text); }
+#help-pop { position: fixed; z-index: 60; background: var(--card); color: var(--text); border: 1px solid var(--accent);
+  border-radius: 6px; padding: 8px 10px; font-size: 13px; line-height: 1.45; box-shadow: 0 6px 20px rgba(0,0,0,.45); }
+@media (pointer: coarse) { .info { font-size: 17px; padding: 2px 8px; } }
