@@ -70,7 +70,7 @@ stack manually (Start stack → Space per frame → Finish).
 ## Focus stacking
 
 Frames of a stack go to `stacks/<name>/<name>_1.png`, `_2.png`, …; the result
-is `<name>_stacked.png`. focus-stack's options (consistency, denoise, batch
+is `<name>_stacked.png`. The stacking options (method, focus-stack's consistency, denoise, batch
 size, alignment, depth map, …) are in **Settings** and can be overridden per
 run in the **Stacks** tab.
 
@@ -97,6 +97,26 @@ else runs in the background:
 The header shows what is still being written or compressed. Set the image
 format to `tif` to skip compression entirely (files ~1.8× larger); TIFF files
 then get a **Download PNG** button that compresses on download.
+
+## Halo-free stacking (default)
+
+Classic focus stackers (focus-stack's wavelet method) pick the frame with the
+most detail per pixel. On a black backdrop the blurred rendition of a bright
+edge in the defocused frames beats the featureless black of the in-focus
+frame, so a glow ends up around the model. The default **halo-free** method
+(`scripts/halofree-stack.py`, Python + OpenCV):
+
+1. aligns all frames to the middle one (affine, covers focus breathing) and
+   matches their brightness and colour;
+2. takes the sharpest frame where one frame is clearly in focus;
+3. in a band around the model takes the frame that is clearly darker there —
+   next to a sharp edge that is pure black, so the glow disappears;
+4. uses one fixed frame for the rest of the backdrop (no noise mosaic).
+
+It works frame by frame (about 300 MB for 12 MP frames, so it fits a 1 GB
+Pi 3B). Switch back with Settings → Stacking default options → Method →
+`focus-stack`. Frames that show nothing sharp simply do not contribute: focus
+from the front of the model to its back, not beyond.
 
 ## Exposure tips (and avoiding halos)
 

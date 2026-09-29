@@ -44,6 +44,9 @@
     "bitrate": 10000000
   },
   "focus_stack": {
+    "method": "halofree",
+    "halofree_threshold": 40,
+    "halofree_band": 40,
     "binary": "",
     "output_format": "png",
     "consistency": 2,

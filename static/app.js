@@ -63,7 +63,7 @@ function renderBadges() {
   else if (info.model) b.append(el("span", { class: "badge" }, info.model));
   b.append(el("span", { class: "badge " + (info.focus_stack?.available ? "ok" : "warn"),
     title: info.focus_stack?.binary || "run ./install.sh" },
-    info.focus_stack?.available ? "focus-stack ✓" : "focus-stack missing"));
+    info.focus_stack?.available ? `stacking: ${info.focus_stack.method} ✓` : "no stacker — run ./install.sh"));
   b.append(el("span", { class: "badge " + (info.drive ? "ok" : "") },
     info.drive ? (settings.upload?.auto_drive ? "Drive auto-upload" : "Drive ✓") : "No Drive"));
   if (info.nas) b.append(el("span", { class: "badge ok" }, "NAS ✓"));
@@ -687,7 +687,7 @@ function processOptions() {
 }
 function processOptionsBox() {
   const fs = settings.focus_stack || {};
-  const box = el("details", { id: "process-options", class: "card" }, el("summary", {}, "focus-stack options for this run"));
+  const box = el("details", { id: "process-options", class: "card" }, el("summary", {}, "Stacking options for this run"));
   for (const [key, meta] of Object.entries(FOCUS_STACK_FIELDS)) box.append(fieldFor(key, meta, fs[key]));
   return box;
 }
@@ -703,7 +703,7 @@ async function loadStacks() {
     if (i.type === "checkbox") i.checked = keep[i.dataset.key]; else i.value = keep[i.dataset.key];
   });
   $("#process-options").open = !!openDetails;
-  if (!info.focus_stack?.available) box.append(el("p", { class: "error" }, "focus-stack binary not found — run ./install.sh on the Pi."));
+  if (!info.focus_stack?.available) box.append(el("p", { class: "error" }, "No stacker available — run ./install.sh on the Pi (builds focus-stack, installs python3-opencv)."));
   if (!r.stacks.length) box.append(el("p", { class: "muted" }, "No stacks yet."));
   r.stacks.forEach((s) => box.append(stackCard(s)));
   const all = $("#btn-stacks-process-all");
@@ -731,6 +731,9 @@ $("#btn-jobs-clear").addEventListener("click", async () => {
 
 // ---------------------------------------------------------------- settings
 const FOCUS_STACK_FIELDS = {
+  method: { label: "Method (halofree = no glow around edges on a black backdrop; focus-stack = classic wavelet stacking)", options: ["halofree", "focus-stack"] },
+  halofree_threshold: { label: "Halo-free: detail threshold (× noise; higher = less backdrop noise counted as detail)", type: "number" },
+  halofree_band: { label: "Halo-free: halo band around the model (pixels at half size)", type: "number" },
   output_format: { label: "Output format", options: ["png", "jpg", "tif"] },
   consistency: { label: "Consistency (0-2)", type: "number" },
   denoise: { label: "Denoise", type: "number", step: "0.1" },
@@ -797,7 +800,7 @@ const SETTINGS_SECTIONS = [
     steps: { label: "Steps", type: "number" },
     settle_ms: { label: "Settle time per step (ms)", type: "number" },
   }],
-  ["focus-stack default options", "focus_stack", FOCUS_STACK_FIELDS],
+  ["Stacking default options", "focus_stack", FOCUS_STACK_FIELDS],
 ];
 
 async function loadSettings() {

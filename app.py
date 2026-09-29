@@ -16,6 +16,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -1050,8 +1051,55 @@ def auto_threads():
     return cores
 
 
+HALOFREE_SCRIPT = BASE_DIR / "scripts" / "halofree-stack.py"
+_halofree_check = {}
+
+
+def halofree_available():
+    """The halo-free stacker needs Python OpenCV (python3-opencv on the Pi)."""
+    if "ok" not in _halofree_check:
+        try:
+            probe = subprocess.run([sys.executable, "-c", "import cv2, numpy"], capture_output=True, timeout=60)
+            _halofree_check["ok"] = probe.returncode == 0 and HALOFREE_SCRIPT.exists()
+        except Exception:
+            _halofree_check["ok"] = False
+    return _halofree_check["ok"]
+
+
+def stack_method(opts):
+    """(method, focus-stack binary) a job will use; falls back when a tool is missing."""
+    wanted = opts.get("method") or "halofree"
+    binary = find_focus_stack()
+    if wanted == "halofree" and halofree_available():
+        return "halofree", binary
+    if binary:
+        return "focus-stack", binary
+    if halofree_available():
+        return "halofree", None
+    return None, None
+
+
+def build_halofree_cmd(stack_dir, name, frames, opts):
+    ext = {"jpg": "jpg", "jpeg": "jpg", "tif": "tif", "tiff": "tif"}.get(opts.get("output_format", "png"), "png")
+    output = stack_dir / f"{name}_stacked.{ext}"
+    cmd = [sys.executable, str(HALOFREE_SCRIPT), f"--output={output.name}",
+           f"--pngcompression={CONFIG.get('png_compress_level', 3)}"]
+    if opts.get("depthmap"):
+        cmd.append(f"--depthmap={name}_depthmap.png")
+    for key, flag in (("halofree_threshold", "--threshold"), ("halofree_band", "--halo-band"),
+                      ("reference", "--reference"), ("jpgquality", "--jpgquality")):
+        if opts.get(key) not in (None, ""):
+            cmd.append(f"{flag}={opts[key]}")
+    cmd += [f.name for f in frames]
+    return cmd, output
+
+
 def run_focus_stack_once(job, binary, stack_dir, name, frames, opts):
     cmd, output = build_focus_stack_cmd(binary, stack_dir, name, frames, opts)
+    return run_stacker(job, cmd, stack_dir), output
+
+
+def run_stacker(job, cmd, stack_dir):
     job_log(job, "$ " + " ".join(shlex.quote(c) for c in cmd))
     # Low priority: the camera and web UI stay responsive while stacks are processed.
     nice = (lambda: os.nice(10)) if os.name == "posix" else None
@@ -1060,13 +1108,10 @@ def run_focus_stack_once(job, binary, stack_dir, name, frames, opts):
     job["pid"] = proc.pid
     for line in proc.stdout:
         job_log(job, line)
-    return proc.wait(), output
+    return proc.wait()
 
 
 def run_focus_stack(job, name, overrides):
-    binary = find_focus_stack()
-    if not binary:
-        raise RuntimeError("focus-stack binary not found — run ./install.sh (builds vendor/focus-stack)")
     stack_dir = safe_child(data_dir("stacks"), name)
     waiting = len(save_queue.status()["pending"])
     if waiting:
@@ -1076,24 +1121,35 @@ def run_focus_stack(job, name, overrides):
     if len(frames) < 2:
         raise RuntimeError(f"Need at least 2 frames, found {len(frames)}")
     opts = {**CONFIG["focus_stack"], **(overrides or {})}
+    method, binary = stack_method(opts)
+    if not method:
+        raise RuntimeError("no stacker available — run ./install.sh (builds focus-stack, installs python3-opencv)")
+    if method != (opts.get("method") or "halofree"):
+        job_log(job, f"{opts.get('method')} is not available — using {method} instead")
     for old in stack_dir.glob(f"{name}_stacked.*"):
         old.unlink()
     started = time.time()
-    rc, output = run_focus_stack_once(job, binary, stack_dir, name, frames, opts)
-    if rc in OOM_EXIT_CODES and not job.get("cancel"):
+    if method == "halofree":
+        job_log(job, "Method: halo-free (black backdrop)")
+        cmd, output = build_halofree_cmd(stack_dir, name, frames, opts)
+        rc = run_stacker(job, cmd, stack_dir)
+    else:
+        job_log(job, "Method: focus-stack")
+        rc, output = run_focus_stack_once(job, binary, stack_dir, name, frames, opts)
+    if method == "focus-stack" and rc in OOM_EXIT_CODES and not job.get("cancel"):
         # Killed by the kernel's out-of-memory killer: retry once as lean as possible.
         job_log(job, "focus-stack ran out of memory — retrying with threads=1, batchsize=2 (slower)")
         rc, output = run_focus_stack_once(job, binary, stack_dir, name, frames,
                                           {**opts, "threads": 1, "batchsize": 2})
     (stack_dir / "process.log").write_text("\n".join(job["log"]), encoding="utf-8")
     if rc in OOM_EXIT_CODES:
-        raise RuntimeError(f"focus-stack ran out of memory ({meminfo_mb('MemTotal')} MB RAM, "
+        raise RuntimeError(f"{method} ran out of memory ({meminfo_mb('MemTotal')} MB RAM, "
                            f"{meminfo_mb('SwapTotal')} MB swap) — enlarge the swap (see README) "
                            "or use fewer frames")
     if rc != 0:
-        raise RuntimeError(f"focus-stack exited with code {rc}")
+        raise RuntimeError(f"{method} exited with code {rc}")
     if not output.exists():
-        raise RuntimeError("focus-stack finished but produced no output file")
+        raise RuntimeError(f"{method} finished but produced no output file")
     job_log(job, f"Done in {time.time() - started:.0f}s -> {output.name}")
     result = {"output": output.name, "seconds": round(time.time() - started, 1)}
     if opts.get("delete_frames"):
@@ -1511,14 +1567,15 @@ def api_lock_exposure():
 
 @app.route("/api/camera_info")
 def api_camera_info():
-    binary = find_focus_stack()
+    method, binary = stack_method(CONFIG["focus_stack"])
     return jsonify(
         model=camera.model,
         index=camera.index,
         has_autofocus=camera.has_autofocus,
         demo=camera.demo,
         sensor_resolution=list(camera.sensor_resolution),
-        focus_stack={"available": bool(binary), "binary": binary,
+        focus_stack={"available": bool(method), "method": method, "binary": binary,
+                     "halofree": halofree_available(),
                      "version": focus_stack_version(binary) if binary else None},
         lens_range=jsonable(camera.camera_controls.get("LensPosition")),
         drive=drive_available(),
