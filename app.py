@@ -300,15 +300,22 @@ class RealCamera:
         self.applied = {}
         self.hold_full = False  # focus check wants real 100% crops
         self.mode = None        # "preview" (binned, fast) or "full"
-        try:  # probing modes reconfigures the sensor: only possible before start()
-            self.sensor_modes = sorted(
-                ({"size": list(m["size"]), "fps": round(float(m.get("fps") or 0), 1),
-                  "bit_depth": m.get("bit_depth")} for m in self.picam2.sensor_modes),
-                key=lambda m: -m["size"][0] * m["size"][1])
+        self.sensor_modes = self._list_sensor_modes()
+        self.start_still_mode()
+
+    def _list_sensor_modes(self):
+        """Sensor mode sizes from the raw format list. Deliberately not Picamera2's
+        sensor_modes property: that configures the camera in every mode (incl. full-res
+        raw), which on a Pi 3B left too little camera memory for the preview encoder."""
+        try:
+            from libcamera import StreamRole
+
+            formats = self.picam2.camera.generate_configuration([StreamRole.Raw]).at(0).formats
+            sizes = {(s.width, s.height) for pf in formats.pixel_formats for s in formats.sizes(pf)}
+            return [{"size": list(s)} for s in sorted(sizes, key=lambda s: -s[0] * s[1])]
         except Exception as exc:
             log.warning("Could not list sensor modes: %s", exc)
-            self.sensor_modes = []
-        self.start_still_mode()
+            return []
 
     def _pick_encoders(self):
         """Pi 3/4 (VC4) have hardware MJPEG/H.264 encoders; the Pi 5 does not."""
