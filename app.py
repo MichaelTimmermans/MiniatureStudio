@@ -275,12 +275,19 @@ class StreamingOutput(io.BufferedIOBase):
     def __init__(self):
         self.frame = None
         self.condition = threading.Condition()
+        self.started = time.time()
+        self.last_frame = 0.0
 
     def write(self, buf):
         with self.condition:
             self.frame = bytes(buf)
+            self.last_frame = time.time()
             self.condition.notify_all()
         return len(buf)
+
+    def seconds_without_frames(self):
+        """How long the preview has been silent (a camera that delivers no frames)."""
+        return round(time.time() - max(self.last_frame, self.started), 1)
 
 
 class RealCamera:
@@ -1916,7 +1923,8 @@ def api_status():
                    storage={"target": storage_target(),
                             "available": storage_target() != "usb" or os.path.ismount(USB_MOUNT),
                             "label": CONFIG.get("storage", {}).get("label")},
-                   preview_mode=getattr(camera, "mode", None))
+                   preview_mode=getattr(camera, "mode", None),
+                   preview_stalled_s=camera.stream.seconds_without_frames())
 
 
 @app.route("/api/autofocus/trigger", methods=["POST"])

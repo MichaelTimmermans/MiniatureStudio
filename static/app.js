@@ -83,6 +83,11 @@ function renderBadges() {
       ? el("span", { class: "badge ok", title: "Captures are saved to the USB disk" }, `USB ${st.label || "disk"}`)
       : el("span", { class: "badge warn", title: "Plug the disk back in, or switch to the SD card in Settings → Storage" }, "USB disk missing"));
   }
+  // A camera that is detected but sends no frames (loose/damaged ribbon cable, "frontend timed out").
+  if (status.preview_stalled_s > 8 && !status.recording?.active) {
+    b.append(el("span", { class: "badge warn", title: "Shut down, reseat the ribbon cable at both ends (contacts the right way round, latch closed), check it is not pinched, or try another cable." },
+      `⚠ camera sends no image (${Math.round(status.preview_stalled_s)} s) — check the ribbon cable`));
+  }
   const err = status.saving?.last_error || status.compressing?.last_error;
   if (err) b.append(el("span", { class: "badge warn", title: err }, "save error"));
 }
