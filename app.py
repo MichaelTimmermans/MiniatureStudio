@@ -2457,6 +2457,33 @@ def drop_thumb(kind, relpath):
         (data_dir(kind) / ".thumbs" / (stem + suffix)).unlink(missing_ok=True)
 
 
+@app.route("/api/delete", methods=["POST"])
+def api_bulk_delete():
+    """Delete several photos / videos / stacks at once: {"photos": [...], "videos": [...],
+    "stacks": [...]}. Each item goes through the normal single-delete checks; items that
+    cannot be deleted (open or processing stack, recording video) are reported, not fatal."""
+    from werkzeug.exceptions import HTTPException
+
+    body = request.get_json(force=True) or {}
+    handlers = {"photos": api_photo_delete, "videos": api_video_delete, "stacks": api_stack_delete}
+    deleted, failed = [], []
+    for kind, handler in handlers.items():
+        for name in body.get(kind) or []:
+            try:
+                result = handler(str(name))
+                status = result[1] if isinstance(result, tuple) else 200
+                if status >= 400:
+                    payload = result[0].get_json(silent=True) or {}
+                    failed.append({"kind": kind, "name": name, "error": payload.get("error", f"HTTP {status}")})
+                else:
+                    deleted.append({"kind": kind, "name": name})
+            except HTTPException as exc:
+                failed.append({"kind": kind, "name": name, "error": "not found" if exc.code == 404 else str(exc)})
+            except Exception as exc:
+                failed.append({"kind": kind, "name": name, "error": str(exc)})
+    return jsonify(ok=True, deleted=deleted, failed=failed)
+
+
 @app.route("/api/photos/<name>", methods=["DELETE"])
 def api_photo_delete(name):
     path = safe_child(data_dir("photos"), name)

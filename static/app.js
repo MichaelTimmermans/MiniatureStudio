@@ -786,18 +786,89 @@ function deleteButton(url, what, after) {
   }) }, "Delete");
 }
 
+// ---------------------------------------------------------------- multi-select (gallery & stacks)
+// selection keys look like "photos:name", "videos:name", "stacks:name"
+const selection = { gallery: new Set(), stacks: new Set() };
+const lastPicked = { gallery: null, stacks: null };
+
+function pickBox(group, key) {
+  const box = el("input", { type: "checkbox", checked: selection[group].has(key), "data-pick": key,
+    "aria-label": "Select" });
+  box.addEventListener("click", (e) => {
+    const boxes = [...document.querySelectorAll(`[data-group="${group}"] input[data-pick]`)];
+    if (e.shiftKey && lastPicked[group]) {  // range from the last clicked item
+      const i = boxes.findIndex((b) => b.dataset.pick === lastPicked[group]);
+      const j = boxes.indexOf(box);
+      if (i >= 0) boxes.slice(Math.min(i, j), Math.max(i, j) + 1).forEach((b) => { b.checked = box.checked; });
+    }
+    lastPicked[group] = key;
+    boxes.forEach((b) => { b.checked ? selection[group].add(b.dataset.pick) : selection[group].delete(b.dataset.pick); });
+    updateSelectbar(group);
+  });
+  return el("label", { class: "pick", title: "Select (shift-click for a range)" }, box, "select");
+}
+
+function updateSelectbar(group) {
+  const bar = document.querySelector(`.selectbar[data-kind="${group}"]`);
+  const n = selection[group].size;
+  bar.querySelector(".sel-delete").disabled = !n;
+  bar.querySelector(".sel-delete").textContent = n ? `Delete selected (${n})` : "Delete selected";
+  document.querySelectorAll(`[data-group="${group}"] input[data-pick]`).forEach((b) => {
+    b.closest(".card")?.classList.toggle("selected", b.checked);
+  });
+}
+
+function pruneSelection(group, existing) {
+  for (const key of [...selection[group]]) if (!existing.has(key)) selection[group].delete(key);
+}
+
+document.querySelectorAll(".selectbar").forEach((bar) => {
+  const group = bar.dataset.kind;
+  const reload = group === "gallery" ? () => loadGallery() : () => loadStacks();
+  bar.querySelector(".sel-all").addEventListener("click", () => {
+    document.querySelectorAll(`[data-group="${group}"] input[data-pick]`).forEach((b) => {
+      if (!b.disabled) { b.checked = true; selection[group].add(b.dataset.pick); }
+    });
+    updateSelectbar(group);
+  });
+  bar.querySelector(".sel-none").addEventListener("click", () => {
+    selection[group].clear();
+    document.querySelectorAll(`[data-group="${group}"] input[data-pick]`).forEach((b) => { b.checked = false; });
+    updateSelectbar(group);
+  });
+  bar.querySelector(".sel-delete").addEventListener("click", () => guarded(async () => {
+    const keys = [...selection[group]];
+    if (!keys.length) return;
+    const counts = {};
+    keys.forEach((k) => { const kind = k.split(":")[0]; counts[kind] = (counts[kind] || 0) + 1; });
+    const what = Object.entries(counts).map(([k, n]) => `${n} ${n === 1 ? k.replace(/s$/, "") : k}`).join(", ");
+    if (!confirm(`Permanently delete ${what}?` + (group === "stacks" ? "\n\nThis removes each stack with all its frames and results." : ""))) return;
+    const body = { photos: [], videos: [], stacks: [] };
+    keys.forEach((k) => { const i = k.indexOf(":"); body[k.slice(0, i)].push(k.slice(i + 1)); });
+    const r = await api("/api/delete", "POST", body);
+    r.deleted.forEach((d) => selection[group].delete(`${d.kind}:${d.name}`));
+    const msg = `Deleted ${r.deleted.length}` + (r.failed.length
+      ? ` — ${r.failed.length} skipped: ${r.failed.map((f) => `${f.name} (${f.error})`).join("; ")}` : "");
+    await reload();  // rebuilds the list (and the stacks message line) first
+    say(msg, r.failed.length > 0, group === "stacks" ? "#stacks-msg" : "#message");
+    if (group === "gallery") alert(msg);
+  }, group === "stacks" ? "#stacks-msg" : "#message"));
+});
+
 // ---------------------------------------------------------------- gallery
 async function loadGallery() {
   const [p, v] = await Promise.all([api("/api/photos"), api("/api/videos")]);
   const photos = $("#photos");
   photos.replaceChildren();
+  photos.dataset.group = "gallery";
+  pruneSelection("gallery", new Set([...p.photos.map((f) => `photos:${f.name}`), ...v.videos.map((f) => `videos:${f.name}`)]));
   if (!p.photos.length) photos.append(el("p", { class: "muted" }, "No photos yet."));
   for (const f of p.photos) {
     const url = `/media/photos/${enc(f.name)}`;
     photos.append(el("figure", { class: "card" },
       el("img", { src: `/thumb/photos/${enc(f.name)}`, loading: "lazy", alt: f.name,
         onclick: () => openViewer(f.name, url) }),
-      el("figcaption", {}, el("div", { class: "small" }, f.name), el("div", { class: "muted small" }, `${f.modified.replace("T", " ")} · ${fmtBytes(f.size)}`)),
+      el("figcaption", {}, pickBox("gallery", `photos:${f.name}`), el("div", { class: "small" }, f.name), el("div", { class: "muted small" }, `${f.modified.replace("T", " ")} · ${fmtBytes(f.size)}`)),
       el("div", { class: "row" },
         el("a", { class: "button", href: url + "?download=1" }, "Download"),
         isTiff(f.name) ? el("a", { class: "button", href: url + "?as=png", title: "Compressed on the Pi first (~10-15 s on a Pi 3B)" }, "Download PNG") : null,
@@ -806,16 +877,19 @@ async function loadGallery() {
   }
   const videos = $("#videos");
   videos.replaceChildren();
+  videos.dataset.group = "gallery";
   if (!v.videos.length) videos.append(el("p", { class: "muted" }, "No videos yet."));
   for (const f of v.videos) {
     const url = `/media/videos/${enc(f.name)}`;
     videos.append(el("div", { class: "card row" },
+      pickBox("gallery", `videos:${f.name}`),
       el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(f.name, url, true); } }, f.name),
       el("span", { class: "muted small" }, `${f.modified.replace("T", " ")} · ${fmtBytes(f.size)}`),
       el("a", { class: "button", href: url + "?download=1" }, "Download"),
       uploadButtons("video", f.name),
       deleteButton(`/api/videos/${enc(f.name)}`, f.name, loadGallery)));
   }
+  updateSelectbar("gallery");
 }
 $("#btn-gallery-refresh").addEventListener("click", loadGallery);
 
@@ -840,6 +914,7 @@ function stackCard(s) {
     el("div", { class: "row" },
       cover ? el("img", { class: "cover", src: thumbOf(cover), alt: s.name, onclick: () => openViewer(cover, base + enc(cover)) }) : null,
       el("div", {},
+        s.open ? null : pickBox("stacks", `stacks:${s.name}`),
         el("strong", {}, s.name),
         el("div", { class: "muted small" }, `${s.frames.length} frames · ${s.created ? s.created.replace("T", " ") : ""}`),
         el("div", { class: "row" },
@@ -906,7 +981,10 @@ async function loadStacks() {
   $("#process-options").open = !!openDetails;
   if (!info.focus_stack?.available) box.append(el("p", { class: "error" }, "No stacker available — run ./install.sh on the Pi (builds focus-stack, installs python3-opencv)."));
   if (!r.stacks.length) box.append(el("p", { class: "muted" }, "No stacks yet."));
+  box.dataset.group = "stacks";
+  pruneSelection("stacks", new Set(r.stacks.filter((s) => !s.open).map((s) => `stacks:${s.name}`)));
   r.stacks.forEach((s) => box.append(stackCard(s)));
+  updateSelectbar("stacks");
   const all = $("#btn-stacks-process-all");
   all.hidden = !r.unprocessed || !info.focus_stack?.available;
   all.textContent = `Process all unprocessed stacks (${r.unprocessed})`;

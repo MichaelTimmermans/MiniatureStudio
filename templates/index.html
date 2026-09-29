@@ -175,13 +175,26 @@
         <button id="btn-stacks-refresh">Refresh</button>
         <button id="btn-stacks-process-all" class="primary" hidden>Process all unprocessed stacks</button>
       </div>
+      <div class="row selectbar" data-kind="stacks">
+        <button class="sel-all">Select all</button>
+        <button class="sel-none">Select none</button>
+        <button class="sel-delete danger" disabled>Delete selected</button>
+      </div>
       <div class="muted small">Stacks are processed one after another in the background — shoot them all, queue them, walk away.</div>
       <div id="stacks"></div>
     </div>
 
     <!-- Gallery -->
     <div class="tab" id="tab-gallery" hidden>
-      <div class="row"><button id="btn-gallery-refresh">Refresh</button></div>
+      <div class="row">
+        <button id="btn-gallery-refresh">Refresh</button>
+      </div>
+      <div class="row selectbar" data-kind="gallery">
+        <button class="sel-all">Select all</button>
+        <button class="sel-none">Select none</button>
+        <button class="sel-delete danger" disabled>Delete selected</button>
+        <span class="muted small">Shift-click to select a range</span>
+      </div>
       <h3>Photos</h3>
       <div id="photos" class="gallery"></div>
       <h3>Videos</h3>

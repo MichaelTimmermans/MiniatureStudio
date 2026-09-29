@@ -176,3 +176,9 @@ ol { padding-left: 20px; }
 #help-pop { position: fixed; z-index: 60; background: var(--card); color: var(--text); border: 1px solid var(--accent);
   border-radius: 6px; padding: 8px 10px; font-size: 13px; line-height: 1.45; box-shadow: 0 6px 20px rgba(0,0,0,.45); }
 @media (pointer: coarse) { .info { font-size: 17px; padding: 2px 8px; } }
+
+.selectbar { padding: 6px 0; }
+.pick { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer; }
+.pick input { width: 18px; height: 18px; }
+.card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+@media (pointer: coarse) { .pick input { width: 24px; height: 24px; } }
