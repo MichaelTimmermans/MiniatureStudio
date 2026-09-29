@@ -225,6 +225,15 @@
     <!-- Settings -->
     <div class="tab" id="tab-settings" hidden>
       <fieldset>
+        <legend>Version &amp; updates</legend>
+        <div class="row">
+          <span>Version: <code id="version">–</code></span>
+          <button id="btn-update-check">Check for updates</button>
+          <button id="btn-update-apply" class="primary" hidden>Install update</button>
+        </div>
+        <div id="update-info" class="small"></div>
+      </fieldset>
+      <fieldset>
         <legend>Storage</legend>
         <div class="row"><span id="storage-status">–</span></div>
         <div id="usb-disks"></div>
@@ -285,15 +294,6 @@
         <div id="nas-message" class="status small"></div>
       </fieldset>
 
-      <fieldset>
-        <legend>Version &amp; updates</legend>
-        <div class="row">
-          <span>Version: <code id="version">–</code></span>
-          <button id="btn-update-check">Check for updates</button>
-          <button id="btn-update-apply" class="primary" hidden>Install update</button>
-        </div>
-        <div id="update-info" class="small"></div>
-      </fieldset>
 
       <form id="settings-form"></form>
       <div class="row"><button id="btn-settings-save" class="primary">Save settings</button></div>
