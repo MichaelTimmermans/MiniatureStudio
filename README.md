@@ -13,7 +13,9 @@ focus) in a black booth. Both are 8-frame stacks with the **halo-free**
 method: manual exposure 97 ms (~1/10 s), gain 1.0, white balance locked, so
 all frames are identical. Processing on the Pi 3B took 132 s and 176 s.
 
-![Chariot, 8-frame halo-free stack](docs/examples/chariot-stacked.jpg)
+![Chaos Chariot painted by Michael Timmermans, 8-frame halo-free stack](docs/examples/chaos-chariot-stacked.jpg)
+
+*Chaos Chariot, painted by Michael Timmermans.*
 
 ![Skaven Verminlord painted by Michael Timmermans, 8-frame halo-free stack](docs/examples/verminlord-stacked.jpg)
 
