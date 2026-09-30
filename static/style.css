@@ -149,8 +149,11 @@ ol { padding-left: 20px; }
    together as wide as the old left column; column 3 = the tabs. */
 .studio { display: grid; grid-template-columns: minmax(0, 3fr) minmax(170px, 1.3fr); gap: 12px; align-items: start; }
 .studio-main, .studio-side { min-width: 0; }
-#preview-wrap { width: 100%; }
-#preview { width: 100%; height: auto; max-height: 62vh; object-fit: contain; }
+/* The wrapper has exactly the image's shape, so overlays (grid, crop, focus marker)
+   line up with the picture. --ar is set from the preview size. */
+#preview-wrap { width: min(100%, calc(62vh * var(--ar, 1.3333))); aspect-ratio: var(--ar, 1.3333);
+  margin: 0 auto; overflow: hidden; }
+#preview { width: 100%; height: 100%; display: block; }
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px; margin-top: 8px; }
 .panel[hidden] { display: none; }
 .toolbar { display: flex; flex-direction: column; gap: 6px; padding: 8px; background: var(--panel);
@@ -182,3 +185,8 @@ ol { padding-left: 20px; }
 .pick input { width: 18px; height: 18px; }
 .card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 @media (pointer: coarse) { .pick input { width: 24px; height: 24px; } }
+
+/* Crop frame: everything outside is darkened by a huge shadow. */
+#crop-box { position: absolute; z-index: 3; border: 2px solid var(--warn); cursor: move; touch-action: none;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, .55); }
+#crop-panel select, #crop-panel input[type=range] { width: 100%; }

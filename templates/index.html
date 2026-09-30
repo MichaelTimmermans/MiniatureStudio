@@ -20,6 +20,7 @@
         <div id="grid-overlay" hidden></div>
         <div id="focus-marker" hidden></div>
         <canvas id="clip-overlay" hidden></canvas>
+        <div id="crop-box" hidden title="Drag to move the crop"></div>
         <div id="busy-overlay" hidden>
           <div class="busy-box">
             <div class="spinner"></div>
@@ -39,6 +40,26 @@
         <label><input type="checkbox" id="toggle-focus"> Focus check</label>
         <label><input type="checkbox" id="toggle-histogram"> Histogram</label>
         <label><input type="checkbox" id="toggle-clipping"> Clipping</label>
+        <label><input type="checkbox" id="toggle-crop"> Crop</label>
+      </div>
+      <div id="crop-panel" class="panel" hidden>
+        <label class="block">Aspect ratio
+          <select id="crop-aspect">
+            <optgroup label="Tall models">
+              <option value="1:1">1:1 square</option>
+              <option value="4:5">4:5</option>
+              <option value="3:4" selected>3:4</option>
+              <option value="2:3">2:3</option>
+              <option value="9:16">9:16</option>
+            </optgroup>
+            <optgroup label="Wide models">
+              <option value="16:9">16:9</option>
+              <option value="2:1">2:1</option>
+            </optgroup>
+          </select></label>
+        <label class="block">Size <input type="range" id="crop-size" min="30" max="100" step="1" value="100"></label>
+        <div class="row"><button id="crop-center" type="button">Center</button></div>
+        <div class="muted small" id="crop-info"></div>
       </div>
       <div id="histogram-box" class="panel" hidden>
         <canvas id="histogram" width="512" height="200"></canvas>

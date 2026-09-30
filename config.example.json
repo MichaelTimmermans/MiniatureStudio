@@ -87,5 +87,16 @@
   },
   "ui": {
     "pinned_controls": null
+  },
+  "crop": {
+    "enabled": false,
+    "aspect": "3:4",
+    "size": 1.0,
+    "cx": 0.5,
+    "cy": 0.5,
+    "x": 0.0,
+    "y": 0.0,
+    "w": 1.0,
+    "h": 1.0
   }
 }

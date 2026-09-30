@@ -109,6 +109,17 @@ When the camera supports `AfMode`/`LensPosition`:
 Manual-focus cameras such as the HQ Camera do not show the sweep; there you
 stack manually (Start stack → Space per frame → Finish).
 
+## Cropping tall or wide models
+
+The sensor is landscape (4:3); tall models waste the sides, wide models the top
+and bottom. Tick **Crop** next to the preview, pick an aspect ratio (1:1, 4:5,
+3:4, 2:3, 9:16 for tall models; 16:9, 2:1 for wide ones) and a size, and drag
+the orange frame on the preview to position it. The grid and histogram follow
+the crop. Photos, stack frames and lens sweeps are cut to that frame when they
+are captured — which also makes saving, compressing and stacking faster on a
+Pi 3B (fewer pixels). The crop is stored on the Pi, so it applies from every
+device. Videos are not cropped.
+
 ## Focus stacking
 
 Frames of a stack go to `stacks/<name>/<name>_1.png`, `_2.png`, …; the result

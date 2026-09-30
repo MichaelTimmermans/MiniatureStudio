@@ -41,6 +41,9 @@ const HELP = {
   AfMetering: "Where autofocus measures sharpness. Auto: the camera decides. Windows: specific areas (not set by this app).",
   LensPosition: "Lens focus distance in dioptres = 1 / distance in metres. 0 = infinity, 2 = 50 cm, 4 = 25 cm, 10 = 10 cm. Higher = closer. For the lens sweep set start and end around your model.",
 
+  // ---------------------------------------------------------------- crop
+  crop: "Crop photos and stack frames to a tall or wide frame. Drag the orange frame on the preview to position it; the darkened part is cut off. The grid and histogram follow the crop. Costs the Pi nothing — it even speeds up saving and stacking (fewer pixels). Videos are not cropped.",
+
   // ---------------------------------------------------------------- Settings: files
   filename_pattern: "How files are named. {dt:%Y%m%d_%H%M%S} = date and time, {label} = the label you type on the Capture tab, {seq:03d} = a counter (001, 002, …). Example: {seq:04d}_{label}.",
   next_seq: "The next number used for {seq} in the file name pattern. Change it to continue a numbering.",

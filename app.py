@@ -599,6 +599,33 @@ def ae_converged(md):
     return None
 
 
+def crop_box(size):
+    """Pixel box (left, top, right, bottom) of the configured crop, or None.
+    The crop is stored as a normalised rectangle (0..1) of the full frame."""
+    c = CONFIG.get("crop") or {}
+    if not c.get("enabled"):
+        return None
+    w_img, h_img = size
+    try:
+        x, y, w, h = (float(c[k]) for k in ("x", "y", "w", "h"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0 or (w >= 0.999 and h >= 0.999):
+        return None
+    left = int(round(max(0.0, min(1.0, x)) * w_img))
+    top = int(round(max(0.0, min(1.0, y)) * h_img))
+    right = min(w_img, left + max(16, int(round(w * w_img))) // 2 * 2)  # even sizes
+    bottom = min(h_img, top + max(16, int(round(h * h_img))) // 2 * 2)
+    return left, top, right, bottom
+
+
+def apply_crop(image):
+    """Cut the configured crop out of a captured frame (cheap: a copy of the region).
+    Also makes saving, compressing and stacking faster — fewer pixels."""
+    box = crop_box(image.size)
+    return (image.crop(box), box) if box else (image, None)
+
+
 def exposure_summary(md):
     parts = []
     if md.get("ExposureTime"):
@@ -1702,8 +1729,9 @@ def run_sweep(job, name, positions, settle_ms, process):
                 time.sleep(settle_ms / 1000)
                 path = stack_dir / f"{name}_{n}{image_ext()}"
                 image, metadata = camera.grab()
-            save_queue.put(image, path, metadata, {"stack": name, "frame": n, "lens_position_target": pos},
-                           compress=False)
+            image, box = apply_crop(image)
+            save_queue.put(image, path, metadata, {"stack": name, "frame": n, "lens_position_target": pos,
+                                                   "crop": box}, compress=False)
             with state_lock:
                 active_stack["count"] = n
             job_log(job, f"frame {n}/{len(positions)} @ LensPosition {pos} "
@@ -2154,8 +2182,9 @@ def api_capture():
     with camera_lock:
         image, metadata = camera.grab()
     grabbed = time.time() - started
+    image, box = apply_crop(image)
     # Encoding + upload run in the background; auto-upload starts once the file exists.
-    save_queue.put(image, path, metadata, {"label": label}, upload=("photo", path.name))
+    save_queue.put(image, path, metadata, {"label": label, "crop": box}, upload=("photo", path.name))
     log.info("photo %s: grab %.1fs, queued after %.1fs", path.name, grabbed, time.time() - started)
     return jsonify(ok=True, file=path.name, seconds=round(grabbed, 2), saving=True,
                    uploads=["queued"] if auto_upload_dests() else [])
@@ -2244,7 +2273,8 @@ def api_stack_frame():
             active_stack["count"] -= 1
         raise
     grabbed = time.time() - started
-    save_queue.put(image, path, metadata, {"stack": name, "frame": n}, compress=False)
+    image, box = apply_crop(image)
+    save_queue.put(image, path, metadata, {"stack": name, "frame": n, "crop": box}, compress=False)
     return jsonify(ok=True, name=name, frame=n, file=path.name, seconds=round(grabbed, 2), saving=True)
 
 
@@ -2568,7 +2598,7 @@ def api_upload():
 
 EDITABLE_SETTINGS = {"filename_pattern", "image_format", "jpeg_quality", "png_compress_level",
                      "save_metadata", "persist_controls", "next_seq", "focus_stack", "upload",
-                     "video", "camera", "sweep", "ui"}
+                     "video", "camera", "sweep", "ui", "crop"}
 
 
 @app.route("/api/settings", methods=["GET", "POST"])
@@ -2578,6 +2608,16 @@ def api_settings():
         unknown = set(body) - EDITABLE_SETTINGS
         if unknown:
             return jsonify(ok=False, error=f"not editable: {sorted(unknown)}"), 400
+        if "crop" in body:
+            c = body["crop"] if isinstance(body["crop"], dict) else {}
+            clean = {"enabled": bool(c.get("enabled")), "aspect": str(c.get("aspect") or "3:4")}
+            for key, default in (("size", 1.0), ("cx", 0.5), ("cy", 0.5), ("x", 0.0), ("y", 0.0), ("w", 1.0), ("h", 1.0)):
+                try:
+                    value = float(c.get(key, default))
+                    clean[key] = min(1.0, max(0.0, value)) if value == value else default  # NaN -> default
+                except (TypeError, ValueError):
+                    clean[key] = default
+            body["crop"] = clean
         if "filename_pattern" in body:
             try:
                 format_name(body["filename_pattern"], "label", 1)

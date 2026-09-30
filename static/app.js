@@ -285,14 +285,16 @@ $("#toggle-grid").addEventListener("change", (e) => { $("#grid-overlay").hidden 
 let focusPoint = { x: 0.5, y: 0.5 };
 let focusTimer = null;
 let sharpMax = 0;
-$("#preview").addEventListener("click", (e) => {
-  const r = e.target.getBoundingClientRect();
-  focusPoint = { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+function setFocusPoint(e) {
+  const r = $("#preview").getBoundingClientRect();
+  focusPoint = { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
+                 y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
   const m = $("#focus-marker");
   m.style.left = focusPoint.x * 100 + "%";
   m.style.top = focusPoint.y * 100 + "%";
   sharpMax = 0;
-});
+}
+$("#preview").addEventListener("click", setFocusPoint);
 $("#toggle-focus").addEventListener("change", (e) => {
   const on = e.target.checked;
   $("#focus-check").hidden = !on;
@@ -603,7 +605,14 @@ function histogramLoop() {
       const bins = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
       let high = 0, low = 0;
       const clip = wantClip ? samplerCtx.createImageData(HIST_W, HIST_H) : null;
+      const cr = crop.enabled ? cropRect() : null;  // histogram of the cropped area only
+      const [cx0, cy0, cx1, cy1] = cr ? [cr.x * HIST_W, cr.y * HIST_H, (cr.x + cr.w) * HIST_W, (cr.y + cr.h) * HIST_H]
+                                      : [0, 0, HIST_W, HIST_H];
+      let n = 0;
       for (let i = 0; i < px.length; i += 4) {
+        const px_i = i >> 2, x = px_i % HIST_W, y = (px_i / HIST_W) | 0;
+        if (x < cx0 || x >= cx1 || y < cy0 || y >= cy1) continue;
+        n++;
         const r = px[i], g = px[i + 1], b = px[i + 2];
         const l = (r * 54 + g * 183 + b * 19) >> 8;  // Rec.709 luma
         bins[0][r]++; bins[1][g]++; bins[2][b]++; bins[3][l]++;
@@ -612,7 +621,7 @@ function histogramLoop() {
           if (clip) { clip.data[i] = 255; clip.data[i + 3] = 200; }  // red where a channel blows out
         } else if (l <= 2) low++;
       }
-      const n = px.length / 4;
+      n = Math.max(n, 1);
       if (wantHist) drawHistogram(bins, high / n, low / n);
       if (clip) {
         const ov = $("#clip-overlay");
@@ -752,6 +761,99 @@ async function loadLog() {
 ["#log-lines", "#log-requests", "#log-auto"].forEach((id) => $(id).addEventListener("change", () => loadLog().catch(() => {})));
 $("#log-filter").addEventListener("input", () => loadLog().catch(() => {}));
 $("#btn-log-refresh").addEventListener("click", () => loadLog().catch((e) => { $("#log-source").textContent = e.message; }));
+
+// ---------------------------------------------------------------- crop (stored on the Pi, applied to captures)
+// Normalised to the full frame: center (cx, cy), size (0.3-1) and an aspect ratio.
+let crop = { enabled: false, aspect: "3:4", size: 1, cx: 0.5, cy: 0.5 };
+function frameAspect() {
+  const s = info.still_size || info.sensor_resolution || [4, 3];
+  return s[0] / s[1];
+}
+function sanitizeCrop() {
+  const num = (v, d, lo, hi) => (Number.isFinite(+v) && v !== null ? Math.min(hi, Math.max(lo, +v)) : d);
+  crop.cx = num(crop.cx, 0.5, 0, 1);
+  crop.cy = num(crop.cy, 0.5, 0, 1);
+  crop.size = num(crop.size, 1, 0.3, 1);
+  if (!/^\d+:\d+$/.test(crop.aspect || "")) crop.aspect = "3:4";
+}
+function cropRect() {
+  sanitizeCrop();
+  const [aw, ah] = crop.aspect.split(":").map(Number);
+  const target = aw / ah, frame = frameAspect();
+  // Largest rectangle of the target aspect that fits the frame, scaled by `size`.
+  let w = target < frame ? target / frame : 1, h = target < frame ? 1 : frame / target;
+  w *= crop.size; h *= crop.size;
+  const x = Math.min(1 - w, Math.max(0, crop.cx - w / 2)), y = Math.min(1 - h, Math.max(0, crop.cy - h / 2));
+  return { x, y, w, h };
+}
+function renderCrop() {
+  const box = $("#crop-box"), grid = $("#grid-overlay");
+  box.hidden = !crop.enabled;
+  $("#crop-panel").hidden = !crop.enabled;
+  $("#toggle-crop").checked = crop.enabled;
+  $("#crop-aspect").value = crop.aspect;
+  $("#crop-size").value = Math.round(crop.size * 100);
+  const r = crop.enabled ? cropRect() : { x: 0, y: 0, w: 1, h: 1 };
+  for (const elm of [box, grid]) {  // the grid follows the crop
+    Object.assign(elm.style, { left: r.x * 100 + "%", top: r.y * 100 + "%", width: r.w * 100 + "%", height: r.h * 100 + "%",
+                               right: "auto", bottom: "auto" });
+  }
+  const s = info.still_size || info.sensor_resolution;
+  $("#crop-info").textContent = s ? `Photos: ${Math.round(r.w * s[0])} × ${Math.round(r.h * s[1])} px` : "";
+}
+let cropSaveTimer = null;
+function saveCrop() {
+  renderCrop();
+  clearTimeout(cropSaveTimer);
+  cropSaveTimer = setTimeout(() => {
+    const r = cropRect();
+    api("/api/settings", "POST", { crop: { ...crop, x: r.x, y: r.y, w: r.w, h: r.h } }).catch((e) => say(e.message, true));
+  }, 300);
+}
+$("#toggle-crop").addEventListener("change", (e) => { crop.enabled = e.target.checked; saveCrop(); });
+$("#crop-aspect").addEventListener("change", (e) => { crop.aspect = e.target.value; saveCrop(); });
+$("#crop-size").addEventListener("input", (e) => { crop.size = e.target.value / 100; saveCrop(); });
+$("#crop-center").addEventListener("click", () => { crop.cx = 0.5; crop.cy = 0.5; saveCrop(); });
+// Drag the frame to move it; a click without moving still sets the focus point.
+(() => {
+  const box = $("#crop-box");
+  let start = null;
+  box.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    try { box.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    const r = cropRect();
+    start = { x: e.clientX, y: e.clientY, cx: r.x + r.w / 2, cy: r.y + r.h / 2, moved: false };
+  });
+  box.addEventListener("pointermove", (e) => {
+    if (!start) return;
+    const pr = $("#preview").getBoundingClientRect();
+    const dx = (e.clientX - start.x) / pr.width, dy = (e.clientY - start.y) / pr.height;
+    if (Math.abs(dx) + Math.abs(dy) > 0.004) start.moved = true;
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+    const r = cropRect();
+    crop.cx = Math.min(1 - r.w / 2, Math.max(r.w / 2, start.cx + dx));
+    crop.cy = Math.min(1 - r.h / 2, Math.max(r.h / 2, start.cy + dy));
+    renderCrop();
+  });
+  const end = (e) => {
+    if (!start) return;
+    const moved = start.moved;
+    start = null;
+    if (moved) saveCrop(); else setFocusPoint(e);
+  };
+  box.addEventListener("pointerup", end);
+  box.addEventListener("pointercancel", () => { start = null; });
+})();
+function loadCrop() {
+  if (settings.crop) {
+    const { enabled, aspect, size, cx, cy } = settings.crop;  // x/y/w/h are derived, not state
+    crop = { ...crop, enabled: !!enabled, aspect, size, cx, cy };
+  }
+  sanitizeCrop();
+  const ps = settings.camera?.preview_size;
+  if (ps) $("#preview-wrap").style.setProperty("--ar", ps[0] / ps[1]);
+  renderCrop();
+}
 
 // ---------------------------------------------------------------- viewer
 const isTiff = (name) => /\.tiff?$/i.test(name);
@@ -1370,6 +1472,7 @@ function restoreView() {
     ["#sweep-start", "#sweep-end"].forEach((s) => { $(s).min = lo; $(s).max = hi; });
   }
   await guarded(loadSettings);
+  loadCrop();
   restoreView();
   loadVersion();
   refreshStatus();
