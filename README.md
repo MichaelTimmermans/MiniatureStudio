@@ -341,7 +341,8 @@ with it):
   sharpest setting is typically **F4-F5.6**. Find your lens's sweet spot with
   **Focus check**: same spot and light, compare the Sharpness value per f-stop.
 - **Booth** of about 30×30×40 cm painted with Black 3.0, black velvet backdrop,
-  model at 25-35 cm.
+  model at 25-35 cm. The 3D-printable parts to build it are on Thingiverse:
+  [thing:7416432](https://www.thingiverse.com/thing:7416432).
 
 Not yet tested on real hardware: USB webcams, Arducam 16 MP / 64 MP sensors,
 Raspberry Pi 4/5.
