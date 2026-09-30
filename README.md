@@ -325,11 +325,26 @@ miniaturestudio-update                              # update from a terminal
 systemd-analyze blame | head -15                    # what slows booting down
 ```
 
-## Hardware this was built for
+## Tested hardware
 
-Raspberry Pi 3B, HQ Camera (IMX477), 5-50 mm CS-mount varifocal with macro ring
-(manual focus), 30×30×40 cm booth. Shoot at F8: smaller apertures cause
-diffraction on this sensor; focus stacking gives more depth of field instead.
+What this app is developed and used with (the example photos above were made
+with it):
+
+- **Raspberry Pi 3B** (1 GB RAM), Raspberry Pi OS Trixie, powered through a
+  power HAT fed by 12 V.
+- **Raspberry Pi HQ Camera** (Sony IMX477, 12.3 MP, 1/2.3").
+- **5-50 mm C-mount varifocal lens** (1/2.3", 12 MP rated) on the HQ camera's
+  C-CS adapter ring, plus a macro/extension ring for close focus. Zoom first,
+  then focus (varifocal lenses shift focus when zooming), and lock the rings.
+- **Aperture:** stacking provides the depth of field, so do not stop down far.
+  On this 1.55 µm sensor diffraction softens the image from about F8; the
+  sharpest setting is typically **F4-F5.6**. Find your lens's sweet spot with
+  **Focus check**: same spot and light, compare the Sharpness value per f-stop.
+- **Booth** of about 30×30×40 cm painted with Black 3.0, black velvet backdrop,
+  model at 25-35 cm.
+
+Not yet tested on real hardware: USB webcams, Arducam 16 MP / 64 MP sensors,
+Raspberry Pi 4/5.
 
 ## License
 
