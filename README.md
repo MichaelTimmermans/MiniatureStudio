@@ -64,6 +64,8 @@ Then open `http://<hostname>.local:8000`.
 
 Updates follow the `main` branch via `git pull`. New system packages, a new
 focus-stack version or a new mount helper are picked up automatically.
+Opening the page while the app restarts can briefly show "focus-stack
+missing"; the page retries by itself.
 
 ## Cameras and presets
 
@@ -311,29 +313,8 @@ camera — worth reading before you start shooting.
 
 ### Power and hardware
 
-- **Under-voltage** (System tab / header warning) is measured by the Pi itself at
-  ~4.63 V. Power HATs with a buck regulator need **more** input voltage than
-  5 V (often 6-12 V); feeding one 5 V gave under-voltage and throttling. With a
-  proper 12 V supply the warning disappeared.
-- **"Camera frontend has timed out"** in the log = the camera is detected but no
-  image arrives: a loose, reversed or pinched **ribbon cable**. Reseat both ends
-  with the Pi switched off. The header warns when the preview gets no frames.
 - Always **shut down** from the System tab before unplugging — pulling the
   power can corrupt the SD card.
-
-### Updates, browser and network
-
-- **Do not edit files on the Pi** — updates use `git pull --ff-only`; change
-  things on your PC, push, and press Install update.
-- While the GitHub repo is private the Pi needs stored credentials
-  (`git config --global credential.helper store` before cloning).
-- **Chrome allows 6 connections per address.** Every open tab holds one for the
-  live preview; with many tabs (or a stuck preview) the rest of the app seems
-  slow. Keep one tab open.
-- **Security extensions** (e.g. Malwarebytes Browser Guard) may flag the page as
-  a "browser locker" — a false positive; allow-list the Pi's address.
-- Opening the page while the app restarts can briefly show "focus-stack
-  missing"; the page now retries by itself.
 
 ### Handy commands
 
@@ -343,15 +324,6 @@ journalctl -u miniaturestudio -b --no-pager | grep -v werkzeug | tail -60
 miniaturestudio-update                              # update from a terminal
 systemd-analyze blame | head -15                    # what slows booting down
 ```
-
-## Developing without a Pi
-
-```bash
-pip install -r requirements.txt
-python app.py --demo --port 8000
-```
-
-Demo mode simulates a camera (with AF, so the sweep can be tested).
 
 ## Hardware this was built for
 
