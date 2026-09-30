@@ -6,6 +6,25 @@ control, photo/video, **focus stacking** with the bundled
 [focus-stack](https://github.com/PetteriAimonen/focus-stack), camera presets, a
 gallery, and (automatic) upload to Google Drive or a NAS.
 
+## Examples
+
+Shot with a Raspberry Pi 3B and the HQ Camera (5-50 mm varifocal, manual
+focus) in a black booth. Both are 8-frame stacks with the **halo-free**
+method: manual exposure 97 ms (~1/10 s), gain 1.0, white balance locked, so
+all frames are identical. Processing on the Pi 3B took 132 s and 176 s.
+
+![Chariot, 8-frame halo-free stack](docs/examples/chariot-stacked.jpg)
+
+![Large model, 8-frame halo-free stack](docs/examples/daemon-stacked.jpg)
+
+Each source frame is sharp at one depth only; the stack combines them:
+
+![Source frames 2, 5 and 8 next to the stacked result](docs/examples/daemon-frames.jpg)
+
+At 100 % — a single frame (focused on the base) next to the stacked result:
+
+![100% crop: single frame versus stacked](docs/examples/daemon-detail.jpg)
+
 ## Install
 
 On a Raspberry Pi running Raspberry Pi OS (Bookworm or newer), as your normal user:
