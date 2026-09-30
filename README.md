@@ -15,15 +15,17 @@ all frames are identical. Processing on the Pi 3B took 132 s and 176 s.
 
 ![Chariot, 8-frame halo-free stack](docs/examples/chariot-stacked.jpg)
 
-![Large model, 8-frame halo-free stack](docs/examples/daemon-stacked.jpg)
+![Skaven Verminlord painted by Michael Timmermans, 8-frame halo-free stack](docs/examples/verminlord-stacked.jpg)
 
-Each source frame is sharp at one depth only; the stack combines them:
+*Skaven Verminlord, painted by Michael Timmermans.*
 
-![Source frames 2, 5 and 8 next to the stacked result](docs/examples/daemon-frames.jpg)
+Each source frame of the Verminlord is sharp at one depth only; the stack combines them:
+
+![Verminlord source frames 2, 5 and 8 next to the stacked result](docs/examples/verminlord-frames.jpg)
 
 At 100 % — a single frame (focused on the base) next to the stacked result:
 
-![100% crop: single frame versus stacked](docs/examples/daemon-detail.jpg)
+![Verminlord head at 100%: single frame versus stacked](docs/examples/verminlord-detail.jpg)
 
 ## Install
 
