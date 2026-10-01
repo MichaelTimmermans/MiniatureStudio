@@ -17,8 +17,12 @@ were made with it):
   model at 25-35 cm. The 3D-printable parts to build it are on Thingiverse:
   [thing:7416432](https://www.thingiverse.com/thing:7416432).
 
-Not yet tested on real hardware: USB webcams, Arducam 16 MP / 64 MP sensors,
-Raspberry Pi 4/5.
+Also tested: a **USB webcam with a Sony IMX179** sensor — detected, preview and
+photos work well; image quality is limited by the camera itself.
+
+Not yet tested on real hardware: Arducam 16 MP / 64 MP sensors, Raspberry Pi 4/5.
+
+![The booth: open front with the lit interior and the Pi at the back](booth/booth-open.jpg)
 
 ## Lens and aperture
 
@@ -66,7 +70,7 @@ automatic lens sweep.
 ### USB webcams
 
 UVC webcams work through the same app: pick them in the camera list (shown
-as "(USB)"). MJPEG webcams are passed through without re-encoding — preview
+as "(USB)"). Tested with a Sony IMX179 USB camera. MJPEG webcams are passed through without re-encoding — preview
 and video (`.avi`, needs ffmpeg) cost the Pi almost nothing. YUYV-only
 webcams do preview and photos but no video. USB cameras can be plugged in
 while running: press **Rescan cameras**. Resolution: the webcam's largest

@@ -29,6 +29,31 @@ At 100 % — a single frame (focused on the base) next to the stacked result:
 
 ![Verminlord head at 100%: single frame versus stacked](docs/examples/verminlord-detail.jpg)
 
+## Screenshots
+
+The whole studio in one browser window — live preview with crop frame, clipping
+warning and focus check on the left, histogram in the middle, capture controls
+on the right. Works on a phone too.
+
+![Main view: live preview with crop frame, clipping and focus check, histogram and capture controls](docs/screenshots/main.jpg)
+
+<table>
+<tr><td align="center" valign="top"><a href="docs/screenshots/camera.jpg"><img src="docs/screenshots/thumbs/camera.jpg" width="260" alt="Camera — most-used controls on top, ⓘ on every setting"></a><br><sub>Camera — most-used controls on top, ⓘ on every setting</sub></td><td align="center" valign="top"><a href="docs/screenshots/stacks.jpg"><img src="docs/screenshots/thumbs/stacks.jpg" width="260" alt="Stacks — queue, reprocess, download, upload"></a><br><sub>Stacks — queue, reprocess, download, upload</sub></td><td align="center" valign="top"><a href="docs/screenshots/gallery.jpg"><img src="docs/screenshots/thumbs/gallery.jpg" width="260" alt="Gallery — view, download, multi-select delete"></a><br><sub>Gallery — view, download, multi-select delete</sub></td></tr>
+<tr><td align="center" valign="top"><a href="docs/screenshots/jobs.jpg"><img src="docs/screenshots/thumbs/jobs.jpg" width="260" alt="Jobs — stacking and uploads in the background"></a><br><sub>Jobs — stacking and uploads in the background</sub></td><td align="center" valign="top"><a href="docs/screenshots/system.jpg"><img src="docs/screenshots/thumbs/system.jpg" width="260" alt="System — Pi stats, logs, reboot / shut down"></a><br><sub>System — Pi stats, logs, reboot / shut down</sub></td><td align="center" valign="top"><a href="docs/screenshots/settings.jpg"><img src="docs/screenshots/thumbs/settings.jpg" width="260" alt="Settings — updates, USB disk, Google Drive, NAS"></a><br><sub>Settings — updates, USB disk, Google Drive, NAS</sub></td></tr>
+</table>
+
+## The booth
+
+A closed box keeps the light and background identical for every model: the
+camera looks in through the front, the Pi sits on the back, and the walls are
+painted with Black 3.0. The 3D-printable parts are on Thingiverse:
+**[thing:7416432](https://www.thingiverse.com/thing:7416432)**.
+
+<table>
+<tr><td align="center" valign="top"><a href="docs/booth/booth-closed.jpg"><img src="docs/booth/thumbs/booth-closed.jpg" width="260" alt="The booth, closed"></a><br><sub>The booth, closed</sub></td><td align="center" valign="top"><a href="docs/booth/booth-open.jpg"><img src="docs/booth/thumbs/booth-open.jpg" width="260" alt="Open front, Pi at the back"></a><br><sub>Open front, Pi at the back</sub></td><td align="center" valign="top"><a href="docs/booth/booth-inside.jpg"><img src="docs/booth/thumbs/booth-inside.jpg" width="260" alt="Lit interior, Black 3.0 walls"></a><br><sub>Lit interior, Black 3.0 walls</sub></td></tr>
+<tr><td align="center" valign="top"><a href="docs/booth/camera-mount.jpg"><img src="docs/booth/thumbs/camera-mount.jpg" width="260" alt="HQ camera looking in"></a><br><sub>HQ camera looking in</sub></td><td align="center" valign="top"><a href="docs/booth/electronics.jpg"><img src="docs/booth/thumbs/electronics.jpg" width="260" alt="Pi 3B, power HAT and USB disk"></a><br><sub>Pi 3B, power HAT and USB disk</sub></td><td align="center" valign="top"><a href="docs/booth/tilt-bracket.jpg"><img src="docs/booth/thumbs/tilt-bracket.jpg" width="260" alt="Tilt bracket with locking knob"></a><br><sub>Tilt bracket with locking knob</sub></td></tr>
+</table>
+
 ## Features
 
 - Live preview with grid, histogram, clipping warning and a 100 % focus check
@@ -98,8 +123,8 @@ missing"; the page retries by itself.
 
 Raspberry Pi 3B, Raspberry Pi HQ Camera (IMX477) with a 5-50 mm C-mount
 varifocal lens, in a black booth — the 3D-printable parts are on Thingiverse:
-[thing:7416432](https://www.thingiverse.com/thing:7416432). Details and other
-cameras: [Hardware](docs/hardware.md).
+[thing:7416432](https://www.thingiverse.com/thing:7416432). A USB webcam
+(Sony IMX179) works too. Details and other cameras: [Hardware](docs/hardware.md).
 
 ## License
 
