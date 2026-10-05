@@ -323,9 +323,10 @@ def af_tuning(Picamera2, index):
         log.warning("Could not load the %s tuning file: %s", model, exc)
         return None
     try:
-        if Picamera2.find_tuning_algo(tuning, "rpi.af") is not None:
+        algorithms = tuning.setdefault("algorithms", [])
+        if any("rpi.af" in algo for algo in algorithms):  # find_tuning_algo raises if absent
             return None
-        tuning.setdefault("algorithms", []).append({"rpi.af": block})
+        algorithms.append({"rpi.af": block})
     except Exception as exc:
         log.warning("Could not add autofocus to the %s tuning: %s", model, exc)
         return None
