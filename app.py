@@ -308,47 +308,61 @@ AF_TUNING = {
 }
 
 
-def af_tuning(Picamera2, index):
-    """Tuning dict with an added AF algorithm, or None to use the stock file."""
-    try:
-        model = Picamera2.global_camera_info()[index]["Model"]
-    except Exception:
+AF_TUNING_DIR = BASE_DIR / "tuning"
+
+
+def csi_sensor_names():
+    """Sensor names from the kernel's I2C devices — readable before libcamera starts."""
+    names = []
+    for f in Path("/sys/bus/i2c/devices").glob("*/name"):
+        try:
+            names.append(f.read_text().strip())
+        except OSError:
+            pass
+    return names
+
+
+def prepare_af_tuning():
+    """libcamera reads the tuning file once, when its camera manager starts (before any
+    Picamera2 object exists), so a tuning with autofocus added must be in place via
+    LIBCAMERA_RPI_TUNING_FILE before the first camera call. Returns the model or None."""
+    if demo_mode() or not CONFIG["camera"].get("af_tuning_fix", True):
         return None
-    block = AF_TUNING.get(model)
-    if not block:
+    models = [n for n in csi_sensor_names() if n in AF_TUNING]
+    if len(models) != 1:
         return None
+    model = models[0]
     try:
+        from picamera2 import Picamera2
         tuning = Picamera2.load_tuning_file(f"{model}.json")
-    except Exception as exc:
-        log.warning("Could not load the %s tuning file: %s", model, exc)
-        return None
-    try:
         algorithms = tuning.setdefault("algorithms", [])
-        if any("rpi.af" in algo for algo in algorithms):  # find_tuning_algo raises if absent
+        if any("rpi.af" in algo for algo in algorithms):  # stock file already has AF
             return None
-        algorithms.append({"rpi.af": block})
+        algorithms.append({"rpi.af": AF_TUNING[model]})
+        AF_TUNING_DIR.mkdir(exist_ok=True)
+        path = AF_TUNING_DIR / f"{model}.json"
+        path.write_text(json.dumps(tuning, indent=1), encoding="utf-8")
     except Exception as exc:
-        log.warning("Could not add autofocus to the %s tuning: %s", model, exc)
+        log.warning("Could not prepare an autofocus tuning for %s: %s", model, exc)
         return None
-    log.info("%s tuning file has no autofocus algorithm: adding one so the lens can be driven", model)
-    return tuning
+    os.environ["LIBCAMERA_RPI_TUNING_FILE"] = str(path)
+    log.info("%s tuning file has no autofocus algorithm: using %s with one added", model, path)
+    return model
 
 
 class RealCamera:
     demo = False
     bgr_arrays = True  # picamera2 "RGB888" arrays are BGR ordered
 
-    def __init__(self, index=0, stream=None, af_fix=True):
+    def __init__(self, index=0, stream=None):
         from picamera2 import Picamera2
         from picamera2.outputs import FfmpegOutput, FileOutput
 
         self._FfmpegOutput, self._FileOutput = FfmpegOutput, FileOutput
         self._pick_encoders()
         self.index = index
-        tuning = af_tuning(Picamera2, index) if af_fix and CONFIG["camera"].get("af_tuning_fix", True) else None
-        self.af_tuning_added = tuning is not None
-        os.environ.pop("LIBCAMERA_RPI_TUNING_FILE", None)
-        self.picam2 = Picamera2(index, tuning=tuning) if tuning else Picamera2(index)
+        self.af_tuning_added = str(AF_TUNING_DIR) in os.environ.get("LIBCAMERA_RPI_TUNING_FILE", "")
+        self.picam2 = Picamera2(index)
         try:
             self._init_rest(stream)
         except Exception:
@@ -1274,11 +1288,14 @@ def open_camera(index=None, stream=None):
     try:
         return RealCamera(index, stream=stream)
     except Exception:
-        if cameras[index]["model"] not in AF_TUNING:
+        if str(AF_TUNING_DIR) not in os.environ.get("LIBCAMERA_RPI_TUNING_FILE", ""):
             raise
-        # The added autofocus tuning must never cost the camera itself.
-        log.exception("Opening the camera with the autofocus tuning failed — retrying with the stock tuning")
-        return RealCamera(index, stream=stream, af_fix=False)
+        # The added autofocus tuning must never cost the camera itself. libcamera only
+        # reads the tuning at startup: switch it off and let systemd restart the app.
+        log.exception("Opening the camera with the autofocus tuning failed — restarting with the stock tuning")
+        CONFIG["camera"]["af_tuning_fix"] = False
+        save_config()
+        os._exit(1)
 
 
 def apply_control_values(cam, values, reset_first=False):
@@ -3570,6 +3587,7 @@ def main():
     threading.Thread(target=_stack_worker, daemon=True, name="focus-stack-queue").start()
     save_queue = SaveQueue(int(CONFIG["camera"].get("save_queue", 2)))
     compressor = Compressor(BASE_DIR / ".compress_queue.json", int(CONFIG["camera"].get("compress_workers", 0)))
+    prepare_af_tuning()
     try:
         camera = open_camera()
     except Exception as exc:

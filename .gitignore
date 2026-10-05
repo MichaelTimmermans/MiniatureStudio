@@ -9,3 +9,5 @@ __pycache__/
 CLAUDE.md
 .compress_queue.json
 .compress_queue.tmp
+tuning/
+.claude/
