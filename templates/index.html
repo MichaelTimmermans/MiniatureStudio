@@ -87,16 +87,21 @@
       <h3>Photo</h3>
       <button id="btn-photo" class="primary">📷 Photo <kbd>P</kbd></button>
 
-      <h3>Focus stack — manual</h3>
+      <h3>Focus stack</h3>
+      <div class="seg" id="stack-mode" hidden>
+        <label><input type="radio" name="stack-mode" value="manual"> Manual — frame by frame</label>
+        <label><input type="radio" name="stack-mode" value="sweep"> Automatic — lens sweep</label>
+      </div>
+      <div class="muted small" id="stack-mode-hint"></div>
       <div class="row">
-        <button id="btn-stack-start">Start stack</button>
-        <button id="btn-stack-frame" disabled>+ Frame <kbd>Space</kbd></button>
-        <button id="btn-stack-end" disabled>Finish</button>
+        <button id="btn-stack-start" class="primary">▶ Start stack</button>
+        <button id="btn-stack-frame" class="manual-only" disabled>+ Frame <kbd>Space</kbd></button>
+        <button id="btn-stack-end" class="manual-only" disabled>Finish</button>
+        <button id="btn-sweep-cancel" hidden>Cancel sweep</button>
       </div>
       <label class="small" id="stack-autoprocess-label"><input type="checkbox" id="stack-autoprocess" checked> Process right after finishing</label>
 
       <div id="sweep-box" hidden>
-        <h3>Focus stack — automatic lens sweep</h3>
         <div class="grid2">
           <label>Start LensPosition <input type="number" step="0.05" id="sweep-start"></label>
           <label>End LensPosition <input type="number" step="0.05" id="sweep-end"></label>
@@ -109,10 +114,6 @@
         </div>
         <div class="muted small">LensPosition in dioptres: 0 = infinity, higher = closer. Current: <span id="lens-now">–</span>.
           Frames are stacked automatically after the sweep.</div>
-        <div class="row">
-          <button id="btn-sweep" class="primary">▶ Start sweep</button>
-          <button id="btn-sweep-cancel" hidden>Cancel</button>
-        </div>
       </div>
 
       <h3>Video</h3>

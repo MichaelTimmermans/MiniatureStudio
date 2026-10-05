@@ -192,3 +192,9 @@ ol { padding-left: 20px; }
 #crop-panel select, #crop-panel input[type=range] { width: 100%; }
 
 fieldset.flash { border-color: var(--warn); box-shadow: 0 0 0 2px var(--warn); transition: box-shadow .3s; }
+
+.seg { display: flex; flex-wrap: wrap; gap: .25rem; margin: .25rem 0; }
+.seg label { display: flex; align-items: center; gap: .35rem; padding: .35rem .6rem; border: 1px solid var(--border, #444);
+  border-radius: 6px; cursor: pointer; }
+.seg label:has(input:checked) { border-color: var(--accent, #4a9eff); background: rgba(74, 158, 255, .12); }
+#camera-check-verdict { white-space: pre-line; }

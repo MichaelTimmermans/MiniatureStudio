@@ -101,7 +101,6 @@ async function refreshStatus() {
   $("#btn-stack-start").disabled = !!stack || status.recording.active;
   $("#btn-stack-frame").disabled = !stack || !!stack.sweep;
   $("#btn-stack-end").disabled = !stack || !!stack.sweep;
-  $("#btn-sweep").disabled = !!stack || status.recording.active;
   $("#btn-sweep-cancel").hidden = !(stack && stack.sweep);
   $("#btn-photo").disabled = status.recording.active;
   if (isBusy()) CAPTURE_BUTTONS.forEach((s) => { $(s).disabled = true; });  // a capture is running
@@ -131,7 +130,7 @@ function uploadNote(r) { return r.uploads && r.uploads.length ? " — will uploa
 
 // Full-screen overlay while the camera is busy, so nothing gets clicked twice.
 const busyReasons = new Set();
-const CAPTURE_BUTTONS = ["#btn-photo", "#btn-stack-frame", "#btn-stack-start", "#btn-stack-end", "#btn-sweep", "#btn-video"];
+const CAPTURE_BUTTONS = ["#btn-photo", "#btn-stack-frame", "#btn-stack-start", "#btn-stack-end", "#btn-video"];
 function showBusy(text, reason = "capture") {
   busyReasons.add(reason);
   $("#busy-text").textContent = text;
@@ -156,7 +155,35 @@ $("#btn-photo").addEventListener("click", () => guarded(async () => {
   } finally { hideBusy(); refreshStatus(); }
 }));
 
+// One "Start stack": manual (frame by frame) or, on autofocus cameras, a lens sweep.
+function stackMode() {
+  return info.has_autofocus && document.querySelector('input[name="stack-mode"]:checked')?.value === "sweep"
+    ? "sweep" : "manual";
+}
+function showStackMode() {
+  const sweep = stackMode() === "sweep";
+  $("#sweep-box").hidden = !sweep;
+  document.querySelectorAll(".manual-only").forEach((e) => { e.hidden = sweep; });
+  $("#stack-autoprocess-label").hidden = sweep || !!info.has_autofocus;  // AF: always auto-stacked
+  $("#stack-mode-hint").textContent = sweep
+    ? "The app steps the lens from start to end, takes a frame at each position and stacks them."
+    : (info.has_autofocus
+      ? "Start, then for each frame set the focus (LensPosition in the Camera tab) and press + Frame. Finish when done."
+      : "Start, then for each frame turn the focus ring a little and press + Frame. Finish when done.");
+}
+document.querySelectorAll('input[name="stack-mode"]').forEach((r) => r.addEventListener("change", () => {
+  store("stackMode", stackMode());
+  showStackMode();
+}));
+
 $("#btn-stack-start").addEventListener("click", () => guarded(async () => {
+  if (stackMode() === "sweep") {
+    const s = await api("/api/stack/sweep", "POST", sweepBody());
+    say(`Sweep ${s.name} started`);
+    watchJob(s.job);
+    refreshStatus();
+    return;
+  }
   const r = await api("/api/stack/start", "POST", { label: label() });
   say(`Stack ${r.name} started — set focus and take frames` + (r.exposure_locked ? " (exposure & white balance locked)" : ""));
   refreshStatus();
@@ -203,12 +230,6 @@ function sweepBody() {
     settle_ms: parseInt($("#sweep-settle").value, 10),
   };
 }
-$("#btn-sweep").addEventListener("click", () => guarded(async () => {
-  const r = await api("/api/stack/sweep", "POST", sweepBody());
-  say(`Sweep ${r.name} started`);
-  watchJob(r.job);
-  refreshStatus();
-}));
 $("#btn-sweep-cancel").addEventListener("click", () => guarded(async () => {
   if (status.stack?.job) await api(`/api/jobs/${status.stack.job}/cancel`, "POST", {});
 }));
@@ -497,7 +518,7 @@ $("#btn-camera-check").addEventListener("click", () => guarded(async () => {
   try {
     const r = await api("/api/camera/diagnostics");
     $("#camera-check").hidden = false;
-    $("#camera-check-verdict").textContent = r.verdict;
+    $("#camera-check-verdict").textContent = r.autofocus ? `${r.verdict}\n\nAutofocus: ${r.autofocus}` : r.verdict;
     $("#camera-check-list").textContent = r.list_cameras;
     $("#camera-check-config").textContent = r.config.path
       ? `${r.config.path}\n${r.config.lines.join("\n") || "(no camera lines — automatic detection)"}`
@@ -1497,8 +1518,11 @@ function restoreView() {
   if ($("#message").textContent === "Waiting for the app to start…") say("");
   $("#no-camera-notice").hidden = !info.camera_error;
   $("#btn-af").hidden = !info.has_autofocus;
-  $("#sweep-box").hidden = !info.has_autofocus;
-  $("#stack-autoprocess-label").hidden = !!info.has_autofocus;  // AF: always auto-stacked
+  $("#stack-mode").hidden = !info.has_autofocus;
+  const mode = recall("stackMode") || "sweep";
+  const radio = document.querySelector(`input[name="stack-mode"][value="${mode}"]`);
+  if (radio) radio.checked = true;
+  showStackMode();
   if (info.lens_range) {
     const [lo, hi] = info.lens_range;
     ["#sweep-start", "#sweep-end"].forEach((s) => { $(s).min = lo; $(s).max = hi; });

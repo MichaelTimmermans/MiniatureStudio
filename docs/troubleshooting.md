@@ -33,6 +33,14 @@ and shut down are there too.
 - **Captures sometimes take several seconds** — in fast preview mode each capture
   reserves ~55 MB of camera memory, which can be slow on a 1 GB Pi right after
   background compression. Live preview → `full` avoids it.
+- **Autofocus / lens sweep does nothing, all frames equally blurry** — Camera tab
+  → Camera type → **Run camera check** and read the *Autofocus* line. "No lens
+  position or AF state" means libcamera is not driving the focus motor: either
+  the sensor's tuning file has no autofocus algorithm (MiniatureStudio adds one
+  for the Arducam IMX519 automatically) or the focus motor driver did not load
+  (look for `ak7375` / `vcm` errors in the kernel messages; reseat the ribbon
+  cable). Also mind the minimum focus distance: the IMX519 focuses down to
+  roughly 10 cm.
 - **The page briefly says "focus-stack missing" after an update** — it was opened
   while the app restarted; it retries by itself.
 

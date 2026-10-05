@@ -7,14 +7,22 @@ depth; the app merges the sharp parts into one image.
 
 ## Taking a stack
 
-- **Manual focus** (e.g. HQ camera): **Start stack**, turn the focus ring,
-  press **+ Frame** (or Space) for each depth, then **Finish**. Tick "Process
-  right after finishing" to queue it immediately.
-- **Autofocus cameras:** the **lens sweep** takes all frames by itself. Focus on
-  the front of the model and press **Current → start**, focus on the back and
-  press **Current → end**, choose the number of steps and a settle time (raise
-  it if frames look blurry), and start. The stack is processed automatically.
-  LensPosition is in dioptres: 0 = infinity, higher = closer (4 = 25 cm).
+Capture tab → **Focus stack**. Autofocus cameras get a choice between
+**Manual — frame by frame** and **Automatic — lens sweep**; **Start stack**
+follows that choice. Cameras without autofocus only have the manual mode.
+
+- **Manual:** **Start stack**, set the focus (turn the focus ring, or change
+  LensPosition in the Camera tab on an autofocus camera), press **+ Frame** (or
+  Space) for each depth, then **Finish**. Tick "Process right after finishing"
+  to queue it immediately (autofocus cameras always process automatically).
+- **Automatic — lens sweep:** the app moves the lens and takes all frames by
+  itself. Focus on the front of the model and press **Current → start**, focus
+  on the back and press **Current → end**, choose the number of steps and a
+  settle time (raise it if frames look blurry), and press **Start stack**. The
+  stack is processed automatically. LensPosition is in dioptres: 0 = infinity,
+  higher = closer (4 = 25 cm, 10 = 10 cm). If the lens does not move, the sweep
+  stops after the first frame with an explanation — see
+  [Troubleshooting](troubleshooting.md#common-problems).
 
 Frames go to `stacks/<name>/<name>_1.tif`, `_2.tif`, …; the result is
 `<name>_stacked.png`. During a stack, exposure and white balance are locked so

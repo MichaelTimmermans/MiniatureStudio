@@ -292,6 +292,43 @@ class StreamingOutput(io.BufferedIOBase):
         return round(time.time() - max(self.last_frame, self.started), 1)
 
 
+# Autofocus block for sensors whose stock libcamera tuning file has no "rpi.af": without
+# it libcamera lists AfMode/LensPosition but ignores them ("no AF algorithm"), so the lens
+# never moves. Values follow Arducam's own IMX519 tuning (AK7375 VCM, 0..4095).
+AF_TUNING = {
+    "imx519": {
+        "ranges": {"normal": {"min": 0.0, "max": 12.0, "default": 1.0},
+                   "macro": {"min": 4.0, "max": 32.0, "default": 6.0}},
+        "speeds": {"normal": {"step_coarse": 2.0, "step_fine": 0.5, "contrast_ratio": 0.75,
+                              "pdaf_gain": -0.03, "pdaf_squelch": 0.2, "max_slew": 4.0,
+                              "pdaf_frames": 20, "dropout_frames": 6, "step_frames": 4}},
+        "conf_epsilon": 8, "conf_thresh": 12, "conf_clip": 512, "skip_frames": 5,
+        "map": [0.0, 0, 15.0, 4095],
+    },
+}
+
+
+def af_tuning(Picamera2, index):
+    """Tuning dict with an added AF algorithm, or None to use the stock file."""
+    try:
+        model = Picamera2.global_camera_info()[index]["Model"]
+    except Exception:
+        return None
+    block = AF_TUNING.get(model)
+    if not block:
+        return None
+    try:
+        tuning = Picamera2.load_tuning_file(f"{model}.json")
+    except Exception as exc:
+        log.warning("Could not load the %s tuning file: %s", model, exc)
+        return None
+    if Picamera2.find_tuning_algo(tuning, "rpi.af") is not None:
+        return None
+    tuning.setdefault("algorithms", []).append({"rpi.af": block})
+    log.info("%s tuning file has no autofocus algorithm: adding one so the lens can be driven", model)
+    return tuning
+
+
 class RealCamera:
     demo = False
     bgr_arrays = True  # picamera2 "RGB888" arrays are BGR ordered
@@ -303,7 +340,9 @@ class RealCamera:
         self._FfmpegOutput, self._FileOutput = FfmpegOutput, FileOutput
         self._pick_encoders()
         self.index = index
-        self.picam2 = Picamera2(index)
+        tuning = af_tuning(Picamera2, index)
+        self.af_tuning_added = tuning is not None
+        self.picam2 = Picamera2(index, tuning=tuning) if tuning else Picamera2(index)
         self.model = self.picam2.camera_properties.get("Model", f"camera{index}")
         self.stream = stream or StreamingOutput()  # shared so open preview tabs survive a switch
         self.applied = {}
@@ -1764,15 +1803,24 @@ def run_sweep(job, name, positions, settle_ms, process):
     try:
         with camera_lock:
             camera.set_controls({"AfMode": 0})
+            # Full sensor mode for the whole sweep: no camera restart between frames.
+            camera.set_hold_full(True)
         for n, pos in enumerate(positions, start=1):
             if job.get("cancel"):
                 job_log(job, "Cancelled")
                 break
+            focus_hold["last"] = time.time()
             with camera_lock:
                 camera.set_controls({"LensPosition": float(pos)})
                 time.sleep(settle_ms / 1000)
                 path = stack_dir / f"{name}_{n}{image_ext()}"
                 image, metadata = camera.grab()
+            if n == 1 and metadata.get("LensPosition") is None and "AfState" not in metadata:
+                raise RuntimeError(
+                    "The lens does not move: the camera reports no lens position, so libcamera is not "
+                    "driving the focus motor (usually a tuning file without autofocus, or the focus "
+                    "motor driver did not load). Run Camera tab -> Run camera check and see "
+                    "docs/troubleshooting.md. Use a manual stack meanwhile.")
             image, box = apply_crop(image)
             save_queue.put(image, path, metadata, {"stack": name, "frame": n, "lens_position_target": pos,
                                                    "crop": box}, compress=False)
@@ -1786,6 +1834,7 @@ def run_sweep(job, name, positions, settle_ms, process):
             exposure_state = active_stack.get("exposure_lock") if active_stack else None
             active_stack = None
         unlock_exposure(exposure_state)
+        focus_hold["last"] = time.time()  # watchdog returns to the fast preview shortly
     result = {"frames": count}
     if process and count >= 2 and not job.get("cancel"):
         result["process_job"] = start_job("focus-stack", name, run_focus_stack, name, None)["id"]
@@ -2041,7 +2090,7 @@ def api_cameras():
 
 
 CAMERA_LINE = re.compile(r"camera_auto_detect|dtoverlay=(imx|ov|arducam)|miniaturestudio-camera", re.I)
-KERNEL_CAMERA = re.compile(r"imx\d|ov\d|arducam|unicam|camera|cam[01]|i2c.*(fail|error)", re.I)
+KERNEL_CAMERA = re.compile(r"imx\d|ov\d|arducam|unicam|camera|cam[01]|ak73|dw97|vcm|i2c.*(fail|error)", re.I)
 
 
 @app.route("/api/camera/diagnostics")
@@ -2096,7 +2145,25 @@ def camera_diagnostics():
     else:
         verdict = "No camera detected. Check the ribbon cable with the Pi switched off, then reboot."
     report["verdict"] = verdict
+    report["autofocus"] = autofocus_status()
     return report
+
+
+def autofocus_status():
+    """Is the lens really driven? AfState/LensPosition in the metadata prove the AF algorithm runs."""
+    if camera is None or not getattr(camera, "has_autofocus", False):
+        return "This camera has no autofocus controls (fixed or manual-focus lens)."
+    try:
+        with camera_lock:
+            md = camera.metadata()
+    except Exception as exc:
+        return f"Could not read the camera metadata: {exc}"
+    added = " (autofocus algorithm added by MiniatureStudio)" if getattr(camera, "af_tuning_added", False) else ""
+    if "AfState" in md or md.get("LensPosition") is not None:
+        return f"Autofocus works{added}: lens position {jsonable(md.get('LensPosition'))}, AF state {md.get('AfState')}."
+    return ("The camera lists autofocus controls, but reports no lens position or AF state: libcamera "
+            "is not driving the focus motor. Usually the sensor's tuning file has no autofocus "
+            "algorithm, or the focus motor driver did not load (see the kernel messages)." + added)
 
 
 @app.route("/api/camera/sensor", methods=["GET", "POST"])
@@ -3337,7 +3404,8 @@ def download_debug_log():
         diag = camera_diagnostics()
         section("Camera check", f"Verdict: {diag['verdict']}\n\nrpicam-hello --list-cameras:\n{diag['list_cameras']}"
                 f"\n\n{diag['config']['path']}:\n" + ("\n".join(diag["config"]["lines"]) or "(no camera lines)")
-                + "\n\nKernel camera messages:\n" + "\n".join(diag["kernel"]))
+                + "\n\nKernel camera messages:\n" + "\n".join(diag["kernel"])
+                + f"\n\nAutofocus: {diag['autofocus']}")
     except Exception as exc:
         section("Camera check", f"failed: {exc}")
     kernel = read_journal(5000, kernel=True) or []
