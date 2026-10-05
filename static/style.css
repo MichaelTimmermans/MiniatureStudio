@@ -190,3 +190,5 @@ ol { padding-left: 20px; }
 #crop-box { position: absolute; z-index: 3; border: 2px solid var(--warn); cursor: move; touch-action: none;
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, .55); }
 #crop-panel select, #crop-panel input[type=range] { width: 100%; }
+
+fieldset.flash { border-color: var(--warn); box-shadow: 0 0 0 2px var(--warn); transition: box-shadow .3s; }

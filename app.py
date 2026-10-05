@@ -939,7 +939,7 @@ class USBCamera:
 
 class NoCamera(DemoCamera):
     """Stand-in when the real camera cannot be opened, so the web app still starts:
-    the preview explains the problem and Camera sensor setup / System (logs, reboot)
+    the preview explains the problem and Camera type / System (logs, reboot)
     stay reachable to fix it. Captures fail with the reason."""
 
     demo = False
@@ -960,8 +960,10 @@ class NoCamera(DemoCamera):
         img = Image.new("RGB", size, (24, 10, 10))
         draw = ImageDraw.Draw(img)
         lines = ["NO CAMERA", ""] + textwrap.wrap(self.error, 60) + [
-            "", "Check the ribbon cable (Pi switched off), Camera -> Camera sensor setup,",
-            "or System -> Log. Then restart the app or reboot."]
+            "", "Using an Arducam (IMX519, 64 MP) or another non-official camera?",
+            "Camera tab -> Camera type -> pick it -> Apply & reboot.",
+            "Official Raspberry Pi camera? Check the ribbon cable with the Pi switched off.",
+            "Camera tab -> Run camera check shows what the Pi sees."]
         for i, line in enumerate(lines):
             draw.text((20, 20 + i * 18), line, fill=(255, 120, 120) if i == 0 else (230, 230, 230))
         return img
@@ -2080,7 +2082,7 @@ def camera_diagnostics():
         verdict = "The Pi detects a camera (see the list). If the app still shows no camera, press System → Restart app."
     elif not overlay and not auto_off:
         verdict = ("No camera detected, and no sensor is set. Official Raspberry Pi cameras are found automatically; "
-                   "third-party sensors such as the Arducam IMX519 need Camera sensor setup → pick the sensor → "
+                   "third-party sensors such as the Arducam IMX519 need Camera type → pick the sensor → "
                    "Apply & reboot. If it is an official camera: check the ribbon cable with the Pi switched off.")
     elif overlay and errors:
         verdict = ("A sensor is set (" + ", ".join(o.split("=", 1)[1] for o in overlay) + "), but the kernel reports "

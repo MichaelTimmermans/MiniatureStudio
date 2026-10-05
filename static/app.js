@@ -480,6 +480,16 @@ $("#btn-camera-rescan").addEventListener("click", () => guarded(async () => {
   const back = async () => { try { await api("/api/version"); location.reload(); } catch (_) { setTimeout(back, 2000); } };
   setTimeout(back, 4000);
 }, "#live"));
+$("#btn-goto-camera-type").addEventListener("click", () => {
+  const box = $("#camera-type-box");
+  box.scrollIntoView({ behavior: "smooth", block: "center" });
+  box.classList.add("flash");
+  setTimeout(() => box.classList.remove("flash"), 2000);
+});
+$("#btn-notice-check").addEventListener("click", () => {
+  $("#camera-type-box").scrollIntoView({ behavior: "smooth", block: "center" });
+  $("#btn-camera-check").click();
+});
 $("#btn-camera-check").addEventListener("click", () => guarded(async () => {
   const btn = $("#btn-camera-check");
   btn.disabled = true;
@@ -1485,6 +1495,7 @@ function restoreView() {
     }
   }
   if ($("#message").textContent === "Waiting for the app to start…") say("");
+  $("#no-camera-notice").hidden = !info.camera_error;
   $("#btn-af").hidden = !info.has_autofocus;
   $("#sweep-box").hidden = !info.has_autofocus;
   $("#stack-autoprocess-label").hidden = !!info.has_autofocus;  // AF: always auto-stacked

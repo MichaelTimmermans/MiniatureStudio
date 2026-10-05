@@ -127,6 +127,15 @@
 
     <!-- Camera -->
     <div class="tab" id="tab-controls" hidden>
+      <div id="no-camera-notice" class="alert" hidden>
+        <strong>No camera found.</strong> Official Raspberry Pi cameras are detected automatically.
+        Using an Arducam (IMX519, 64 MP) or another non-official camera? Choose it under
+        <em>Camera type</em> and press <em>Apply &amp; reboot</em>.
+        <div class="row">
+          <button id="btn-goto-camera-type" type="button" class="primary">Go to Camera type</button>
+          <button id="btn-notice-check" type="button">Run camera check</button>
+        </div>
+      </div>
       <fieldset>
         <legend>Most used</legend>
         <div id="quick-controls"></div>
@@ -166,8 +175,8 @@
           <label>Capture resolution <select id="still-size"></select></label>
         </div>
       </fieldset>
-      <fieldset>
-        <legend>Camera sensor setup</legend>
+      <fieldset id="camera-type-box">
+        <legend>Camera type (Arducam and other non-official cameras)</legend>
         <div class="row">
           <select id="sensor-select">
             <option value="auto">Auto-detect (official Raspberry Pi cameras)</option>

@@ -55,7 +55,7 @@ All libcamera controls of the camera appear in the UI automatically; see
 
 Official Raspberry Pi cameras are detected automatically. Arducam's 16MP
 (IMX519) and 64MP (Hawkeye, OV64A40) autofocus cameras need a line in
-`config.txt`: **Camera tab → Camera sensor setup → pick the sensor → Apply &
+`config.txt`: **Camera tab → Camera type → pick the sensor → Apply &
 reboot**. The app sets `camera_auto_detect=0` plus the right `dtoverlay`
 (with a CAM0/CAM1 port on a Pi 5 or Compute Module) and keeps a backup as
 `config.txt.miniaturestudio.bak`; "Auto-detect" undoes it. 64MP frames are
