@@ -322,9 +322,13 @@ def af_tuning(Picamera2, index):
     except Exception as exc:
         log.warning("Could not load the %s tuning file: %s", model, exc)
         return None
-    if Picamera2.find_tuning_algo(tuning, "rpi.af") is not None:
+    try:
+        if Picamera2.find_tuning_algo(tuning, "rpi.af") is not None:
+            return None
+        tuning.setdefault("algorithms", []).append({"rpi.af": block})
+    except Exception as exc:
+        log.warning("Could not add autofocus to the %s tuning: %s", model, exc)
         return None
-    tuning.setdefault("algorithms", []).append({"rpi.af": block})
     log.info("%s tuning file has no autofocus algorithm: adding one so the lens can be driven", model)
     return tuning
 
@@ -333,17 +337,28 @@ class RealCamera:
     demo = False
     bgr_arrays = True  # picamera2 "RGB888" arrays are BGR ordered
 
-    def __init__(self, index=0, stream=None):
+    def __init__(self, index=0, stream=None, af_fix=True):
         from picamera2 import Picamera2
         from picamera2.outputs import FfmpegOutput, FileOutput
 
         self._FfmpegOutput, self._FileOutput = FfmpegOutput, FileOutput
         self._pick_encoders()
         self.index = index
-        tuning = af_tuning(Picamera2, index)
+        tuning = af_tuning(Picamera2, index) if af_fix and CONFIG["camera"].get("af_tuning_fix", True) else None
         self.af_tuning_added = tuning is not None
+        os.environ.pop("LIBCAMERA_RPI_TUNING_FILE", None)
         self.picam2 = Picamera2(index, tuning=tuning) if tuning else Picamera2(index)
-        self.model = self.picam2.camera_properties.get("Model", f"camera{index}")
+        try:
+            self._init_rest(stream)
+        except Exception:
+            try:
+                self.picam2.close()
+            except Exception:
+                pass
+            raise
+
+    def _init_rest(self, stream):
+        self.model = self.picam2.camera_properties.get("Model", f"camera{self.index}")
         self.stream = stream or StreamingOutput()  # shared so open preview tabs survive a switch
         self.applied = {}
         self.hold_full = False  # focus check wants real 100% crops
@@ -1255,7 +1270,14 @@ def open_camera(index=None, stream=None):
     log.info("Opening camera %s: %s%s", index, cameras[index]["model"], " (USB)" if cameras[index]["usb"] else "")
     if cameras[index]["usb"]:
         return USBCamera(index, stream=stream)
-    return RealCamera(index, stream=stream)
+    try:
+        return RealCamera(index, stream=stream)
+    except Exception:
+        if cameras[index]["model"] not in AF_TUNING:
+            raise
+        # The added autofocus tuning must never cost the camera itself.
+        log.exception("Opening the camera with the autofocus tuning failed — retrying with the stock tuning")
+        return RealCamera(index, stream=stream, af_fix=False)
 
 
 def apply_control_values(cam, values, reset_first=False):
