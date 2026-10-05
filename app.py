@@ -2038,6 +2038,65 @@ def api_cameras():
                    default=int(CONFIG["camera"].get("index") or 0))
 
 
+CAMERA_LINE = re.compile(r"camera_auto_detect|dtoverlay=(imx|ov|arducam)|miniaturestudio-camera", re.I)
+KERNEL_CAMERA = re.compile(r"imx\d|ov\d|arducam|unicam|camera|cam[01]|i2c.*(fail|error)", re.I)
+
+
+@app.route("/api/camera/diagnostics")
+def api_camera_diagnostics():
+    return jsonify(ok=True, **camera_diagnostics())
+
+
+def camera_diagnostics():
+    """Everything needed to tell why a camera is not found, without SSH: the cameras
+    libcamera sees, the camera lines in config.txt and the kernel's camera messages."""
+    report = {}
+    try:
+        out = subprocess.run(["rpicam-hello", "--list-cameras"], capture_output=True, text=True, timeout=30)
+        report["list_cameras"] = (out.stdout + out.stderr).strip() or "(no output)"
+    except FileNotFoundError:
+        report["list_cameras"] = "rpicam-hello is not installed"
+    except Exception as exc:
+        report["list_cameras"] = f"failed: {exc}"
+    config_path = next((c for c in ("/boot/firmware/config.txt", "/boot/config.txt") if os.path.exists(c)), None)
+    lines = []
+    if config_path:
+        try:
+            lines = [l for l in Path(config_path).read_text(encoding="utf-8", errors="replace").splitlines()
+                     if CAMERA_LINE.search(l)]
+        except OSError as exc:
+            lines = [f"cannot read: {exc}"]
+    report["config"] = {"path": config_path, "lines": lines}
+    kernel = read_journal(3000, kernel=True) or []
+    report["kernel"] = [l for l in kernel if KERNEL_CAMERA.search(l)][-40:] or ["(no camera messages, or kernel log not readable)"]
+
+    # Plain-language verdict
+    listed = report["list_cameras"]
+    detected = bool(re.search(r"^\s*\d+\s*:", listed, re.M))
+    overlay = [l for l in lines if l.strip().startswith("dtoverlay=") and not l.strip().startswith("#")]
+    auto_off = any(l.strip().startswith("camera_auto_detect=0") for l in lines)
+    errors = [l for l in report["kernel"] if re.search(r"fail|error|timed out|not found|-\d+", l, re.I)]
+    if detected:
+        verdict = "The Pi detects a camera (see the list). If the app still shows no camera, press System → Restart app."
+    elif not overlay and not auto_off:
+        verdict = ("No camera detected, and no sensor is set. Official Raspberry Pi cameras are found automatically; "
+                   "third-party sensors such as the Arducam IMX519 need Camera sensor setup → pick the sensor → "
+                   "Apply & reboot. If it is an official camera: check the ribbon cable with the Pi switched off.")
+    elif overlay and errors:
+        verdict = ("A sensor is set (" + ", ".join(o.split("=", 1)[1] for o in overlay) + "), but the kernel reports "
+                   "errors talking to it (see below). Usually the ribbon cable: reseat both ends with the Pi switched "
+                   "off, contacts the right way round (Arducam boards often face the other way than the HQ camera), "
+                   "latch fully closed. Also check that the chosen sensor matches the camera.")
+    elif overlay:
+        verdict = ("A sensor is set (" + ", ".join(o.split("=", 1)[1] for o in overlay) + "), but no camera is "
+                   "detected. Reboot if you just changed the setting; otherwise check the ribbon cable and that "
+                   "the chosen sensor matches the camera.")
+    else:
+        verdict = "No camera detected. Check the ribbon cable with the Pi switched off, then reboot."
+    report["verdict"] = verdict
+    return report
+
+
 @app.route("/api/camera/sensor", methods=["GET", "POST"])
 def api_camera_sensor():
     """Third-party CSI sensors (Arducam 16/64MP) need a dtoverlay in config.txt + reboot."""
@@ -3272,8 +3331,17 @@ def download_debug_log():
         + "\n".join(j["log"][-80:]) for j in recent) or "none")
     source, data = app_log_lines(5000, requests=False)
     section(f"App log since boot (source: {source}, web requests left out)", "\n".join(data))
-    kernel = read_journal(400, kernel=True)
-    section("Kernel messages (camera, USB, power)", "\n".join(kernel) if kernel else "not readable")
+    try:
+        diag = camera_diagnostics()
+        section("Camera check", f"Verdict: {diag['verdict']}\n\nrpicam-hello --list-cameras:\n{diag['list_cameras']}"
+                f"\n\n{diag['config']['path']}:\n" + ("\n".join(diag["config"]["lines"]) or "(no camera lines)")
+                + "\n\nKernel camera messages:\n" + "\n".join(diag["kernel"]))
+    except Exception as exc:
+        section("Camera check", f"failed: {exc}")
+    kernel = read_journal(5000, kernel=True) or []
+    relevant = re.compile(r"imx\d|ov\d|arducam|unicam|camera|i2c|voltage|throttl|usb|mmc|error|fail", re.I)
+    section("Kernel messages (camera, USB, power, errors)",
+            "\n".join([l for l in kernel if relevant.search(l)][-300:]) or "not readable")
     body = "\n".join(parts) + "\n"
     return Response(body, mimetype="text/plain; charset=utf-8", headers={
         "Content-Disposition": f"attachment; filename=miniaturestudio-debug-{now:%Y%m%d_%H%M%S}.txt"})

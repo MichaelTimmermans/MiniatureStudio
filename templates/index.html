@@ -187,6 +187,13 @@
         <div class="muted small" id="sensor-info">Official cameras are found automatically. Arducam's 16MP and 64MP need
           this setting (writes <code>config.txt</code>, keeps a backup). 64MP frames need a Pi 4/5 — on a Pi 3B pick a lower
           capture resolution.</div>
+        <div class="row"><button id="btn-camera-check" type="button">Run camera check</button></div>
+        <div id="camera-check" hidden>
+          <div id="camera-check-verdict" class="card small"></div>
+          <details open><summary class="small">Cameras the Pi sees</summary><pre class="log" id="camera-check-list"></pre></details>
+          <details><summary class="small">Camera lines in config.txt</summary><pre class="log" id="camera-check-config"></pre></details>
+          <details><summary class="small">Kernel messages about the camera</summary><pre class="log" id="camera-check-kernel"></pre></details>
+        </div>
       </fieldset>
     </div>
 

@@ -41,6 +41,9 @@ const HELP = {
   AfMetering: "Where autofocus measures sharpness. Auto: the camera decides. Windows: specific areas (not set by this app).",
   LensPosition: "Lens focus distance in dioptres = 1 / distance in metres. 0 = infinity, 2 = 50 cm, 4 = 25 cm, 10 = 10 cm. Higher = closer. For the lens sweep set start and end around your model.",
 
+  // ---------------------------------------------------------------- camera check
+  camera_check: "Shows the cameras the Pi detects, the camera lines in config.txt and the kernel's camera messages, with a verdict — no SSH needed.",
+
   // ---------------------------------------------------------------- crop
   crop: "Crop photos and stack frames to a tall or wide frame. Drag the orange frame on the preview to position it; the darkened part is cut off. The grid and histogram follow the crop. Costs the Pi nothing — it even speeds up saving and stacking (fewer pixels). Videos are not cropped.",
 

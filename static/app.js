@@ -60,8 +60,9 @@ document.querySelectorAll("#tabs button").forEach((btn) => btn.addEventListener(
 function renderBadges() {
   const b = $("#badges");
   b.replaceChildren();
-  if (info.camera_error) b.append(el("span", { class: "badge rec", title: info.camera_error },
-    "⚠ no camera — see preview / System → Log"));
+  if (info.camera_error) b.append(el("button", { class: "badge rec", title: info.camera_error,
+    onclick: () => { document.querySelector('#tabs button[data-tab="controls"]').click(); $("#btn-camera-check").click(); } },
+    "⚠ no camera — click to check"));
   else if (info.demo) b.append(el("span", { class: "badge warn" }, "DEMO (no camera)"));
   else if (info.model) b.append(el("span", { class: "badge" }, info.model));
   b.append(el("span", { class: "badge " + (info.focus_stack?.available ? "ok" : "warn"),
@@ -478,6 +479,24 @@ $("#btn-camera-rescan").addEventListener("click", () => guarded(async () => {
   await api("/api/system/restart", "POST", {});
   const back = async () => { try { await api("/api/version"); location.reload(); } catch (_) { setTimeout(back, 2000); } };
   setTimeout(back, 4000);
+}, "#live"));
+$("#btn-camera-check").addEventListener("click", () => guarded(async () => {
+  const btn = $("#btn-camera-check");
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  try {
+    const r = await api("/api/camera/diagnostics");
+    $("#camera-check").hidden = false;
+    $("#camera-check-verdict").textContent = r.verdict;
+    $("#camera-check-list").textContent = r.list_cameras;
+    $("#camera-check-config").textContent = r.config.path
+      ? `${r.config.path}\n${r.config.lines.join("\n") || "(no camera lines — automatic detection)"}`
+      : "config.txt not found";
+    $("#camera-check-kernel").textContent = r.kernel.join("\n");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Run camera check";
+  }
 }, "#live"));
 $("#btn-sensor-apply").addEventListener("click", () => guarded(async () => {
   const sensor = $("#sensor-select").value, port = $("#sensor-port").value;
