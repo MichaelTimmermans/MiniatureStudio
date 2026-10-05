@@ -937,6 +937,48 @@ class USBCamera:
             pass
 
 
+class NoCamera(DemoCamera):
+    """Stand-in when the real camera cannot be opened, so the web app still starts:
+    the preview explains the problem and Camera sensor setup / System (logs, reboot)
+    stay reachable to fix it. Captures fail with the reason."""
+
+    demo = False
+    has_autofocus = False
+    camera_controls = {}
+    sensor_modes = []
+    model = "no camera"
+
+    def __init__(self, error, stream=None):
+        self.error = str(error)
+        super().__init__(stream=stream)
+
+    def _render(self, size):
+        from PIL import Image, ImageDraw
+        import textwrap
+
+        w, h = size
+        img = Image.new("RGB", size, (24, 10, 10))
+        draw = ImageDraw.Draw(img)
+        lines = ["NO CAMERA", ""] + textwrap.wrap(self.error, 60) + [
+            "", "Check the ribbon cable (Pi switched off), Camera -> Camera sensor setup,",
+            "or System -> Log. Then restart the app or reboot."]
+        for i, line in enumerate(lines):
+            draw.text((20, 20 + i * 18), line, fill=(255, 120, 120) if i == 0 else (230, 230, 230))
+        return img
+
+    def metadata(self):
+        return {}
+
+    def grab(self):
+        raise RuntimeError(f"no camera: {self.error}")
+
+    def capture_main_array(self):
+        raise RuntimeError(f"no camera: {self.error}")
+
+    def start_video(self, stem, directory):
+        raise RuntimeError(f"no camera: {self.error}")
+
+
 def save_image(image, path):
     """Write via a hidden temp name + rename, so nobody sees a half-written file."""
     ext = path.suffix.lower()
@@ -1951,6 +1993,7 @@ def api_camera_info():
     return jsonify(
         model=camera.model,
         index=camera.index,
+        camera_error=getattr(camera, "error", None),
         has_autofocus=camera.has_autofocus,
         demo=camera.demo,
         sensor_resolution=list(camera.sensor_resolution),
@@ -1985,7 +2028,10 @@ def api_cameras():
                 camera = open_camera(index, stream=stream)
             except Exception as exc:
                 log.exception("Switching camera failed, reopening previous")
-                camera = open_camera(stream=stream)
+                try:
+                    camera = open_camera(stream=stream)
+                except Exception as exc2:
+                    camera = NoCamera(exc2, stream=stream)
                 return jsonify(ok=False, error=str(exc)), 500
         restore_controls(camera)
     return jsonify(ok=True, cameras=list_cameras(), active=camera.index, model=camera.model,
@@ -3363,7 +3409,12 @@ def main():
     threading.Thread(target=_stack_worker, daemon=True, name="focus-stack-queue").start()
     save_queue = SaveQueue(int(CONFIG["camera"].get("save_queue", 2)))
     compressor = Compressor(BASE_DIR / ".compress_queue.json", int(CONFIG["camera"].get("compress_workers", 0)))
-    camera = open_camera()
+    try:
+        camera = open_camera()
+    except Exception as exc:
+        # Never let a missing or broken camera take the whole web app down.
+        log.exception("Opening the camera failed — starting without a camera")
+        camera = NoCamera(exc)
     atexit.register(lambda: camera.close())
     threading.Thread(target=focus_hold_watchdog, daemon=True).start()
     restore_controls(camera)

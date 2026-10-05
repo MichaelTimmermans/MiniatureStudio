@@ -60,7 +60,9 @@ document.querySelectorAll("#tabs button").forEach((btn) => btn.addEventListener(
 function renderBadges() {
   const b = $("#badges");
   b.replaceChildren();
-  if (info.demo) b.append(el("span", { class: "badge warn" }, "DEMO (no camera)"));
+  if (info.camera_error) b.append(el("span", { class: "badge rec", title: info.camera_error },
+    "⚠ no camera — see preview / System → Log"));
+  else if (info.demo) b.append(el("span", { class: "badge warn" }, "DEMO (no camera)"));
   else if (info.model) b.append(el("span", { class: "badge" }, info.model));
   b.append(el("span", { class: "badge " + (info.focus_stack?.available ? "ok" : "warn"),
     title: info.focus_stack?.binary || "run ./install.sh" },
