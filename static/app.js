@@ -1076,7 +1076,7 @@ function stackCard(s) {
         el("div", { class: "row" },
           s.outputs.result ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(s.outputs.result, base + enc(s.outputs.result)); } }, "result") : el("span", { class: "muted small" }, "not processed"),
           s.outputs.depthmap ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(s.outputs.depthmap, base + enc(s.outputs.depthmap)); } }, "depth map") : null,
-          jobInfo, s.open ? el("span", { class: "badge" }, "open") : null))),
+          jobInfo, s.open ? el("span", { class: "badge", title: "Still taking frames — press Finish to close it" }, "open") : null))),
     el("div", { class: "row" },
       processButton(s),
       s.outputs.result && s.frames.length && !s.open ? el("button", { onclick: () => guarded(async () => {
@@ -1096,6 +1096,11 @@ function stackCard(s) {
 // stacks that failed or never got processed.
 function processButton(s) {
   const busy = s.job && ["queued", "running"].includes(s.job.status);
+  if (s.open && !status.stack?.sweep) {
+    // A manual stack stays open until Finish (Capture tab) — offer it here too.
+    return el("button", { class: "primary", title: "Close this stack (same as Finish in the Capture tab)",
+      onclick: () => { $("#btn-stack-end").click(); setTimeout(loadStacks, 1500); } }, "Finish stack");
+  }
   if (s.open || busy || s.frames.length < 2 || !info.focus_stack?.available) {
     return info.has_autofocus ? null : el("button", { class: "primary", disabled: true }, "Process stack");
   }
