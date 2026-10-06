@@ -406,11 +406,16 @@ class RealCamera:
         except ImportError:
             pass
         if pisp:
-            self._make_preview_encoder = lambda: encoders.JpegEncoder(q=80)
+            self._make_preview_encoder = lambda size=None: encoders.JpegEncoder(q=80)
             libav = getattr(encoders, "LibavH264Encoder", None)
             self._H264Encoder = libav or encoders.H264Encoder
         else:
-            self._make_preview_encoder = encoders.MJPEGEncoder
+            # Picamera2 derives the MJPEG bitrate from the sensor mode's maximum frame
+            # rate: ~10 fps in the full-resolution mode gave ~16 KB frames, i.e. a blocky
+            # 1998-webcam preview during the focus check. The hardware encoder budgets
+            # per frame as if at 30 fps, so give it a fixed high-quality bitrate instead.
+            self._make_preview_encoder = lambda size=None: encoders.MJPEGEncoder(
+                bitrate=int(40_000_000 * (size[0] * size[1]) / (1920 * 1080)) if size else None)
             self._H264Encoder = encoders.H264Encoder
 
     # -- modes --------------------------------------------------------------
@@ -466,7 +471,8 @@ class RealCamera:
         else:
             self.picam2.configure(self._still_config())
             stream_name, self.mode = "lores", "full"
-        self.picam2.start_encoder(self._make_preview_encoder(), self._FileOutput(self.stream), name=stream_name)
+        self.picam2.start_encoder(self._make_preview_encoder(CONFIG["camera"]["preview_size"]),
+                                  self._FileOutput(self.stream), name=stream_name)
         self.picam2.start()
         self._apply_saved_controls()
 
@@ -611,7 +617,8 @@ class RealCamera:
             path = directory / f"{stem}.h264"
             output = self._FileOutput(str(path))
         self.picam2.start_encoder(self._H264Encoder(bitrate=int(vid["bitrate"])), output, name="main")
-        self.picam2.start_encoder(self._make_preview_encoder(), self._FileOutput(self.stream), name="lores")
+        self.picam2.start_encoder(self._make_preview_encoder(vid["preview_size"]), self._FileOutput(self.stream),
+                                  name="lores")
         self.picam2.start()
         self._apply_saved_controls()
         self.mode = "video"
