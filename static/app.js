@@ -343,7 +343,8 @@ async function focusLoop() {
       if (old.startsWith("blob:")) URL.revokeObjectURL(old);
     }
   } catch (_) { /* ignore */ }
-  focusTimer = setTimeout(focusLoop, 1000);
+  // Next crop right away (the request itself paces the loop); slow down in a hidden tab.
+  focusTimer = setTimeout(focusLoop, document.hidden ? 2000 : 50);
 }
 
 // ---------------------------------------------------------------- controls

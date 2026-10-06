@@ -2334,7 +2334,7 @@ def api_focus_check():
     x = min(max(float(request.args.get("x", 0.5)), 0.0), 1.0)
     y = min(max(float(request.args.get("y", 0.5)), 0.0), 1.0)
     size = int(request.args.get("size", 600))
-    focus_hold["last"] = time.time()
+    focus_hold["last"] = started = time.time()
     with camera_lock:
         if camera.mode == "preview":
             camera.set_hold_full(True)  # real 100% crops need the full sensor mode
@@ -2347,13 +2347,23 @@ def api_focus_check():
             left = int(min(max(x * w - cw / 2, 0), w - cw))
             top = int(min(max(y * h - ch / 2, 0), h - ch))
             crop = frame[top:top + ch, left:left + cw, :3]
-    if camera.bgr_arrays:
-        crop = crop[:, :, ::-1]  # picamera2 "RGB888" arrays are BGR ordered
-    score = laplacian_variance(crop.astype(np.float32).mean(axis=2))
-    buf = io.BytesIO()
-    Image.fromarray(np.ascontiguousarray(crop)).save(buf, "JPEG", quality=90)
-    return Response(buf.getvalue(), mimetype="image/jpeg",
-                    headers={"X-Sharpness": f"{score:.1f}", "Cache-Control": "no-store"})
+    try:  # OpenCV is several times faster than numpy + PIL on a Pi 3B
+        import cv2
+        crop = np.ascontiguousarray(crop)
+        gray = cv2.transform(crop.astype(np.float32), np.full((1, 3), 1 / 3, np.float32))
+        score = float(cv2.Laplacian(gray, cv2.CV_32F, ksize=1)[1:-1, 1:-1].var())
+        bgr = crop if camera.bgr_arrays else crop[:, :, ::-1]
+        jpeg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
+    except ImportError:
+        if camera.bgr_arrays:
+            crop = crop[:, :, ::-1]  # picamera2 "RGB888" arrays are BGR ordered
+        score = laplacian_variance(crop.astype(np.float32).mean(axis=2))
+        buf = io.BytesIO()
+        Image.fromarray(np.ascontiguousarray(crop)).save(buf, "JPEG", quality=85)
+        jpeg = buf.getvalue()
+    return Response(jpeg, mimetype="image/jpeg",
+                    headers={"X-Sharpness": f"{score:.1f}", "Cache-Control": "no-store",
+                             "X-Focus-Ms": f"{(time.time() - started) * 1000:.0f}"})
 
 
 focus_hold = {"last": 0.0}
