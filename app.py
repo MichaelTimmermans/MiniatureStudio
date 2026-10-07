@@ -1133,9 +1133,12 @@ class SaveQueue:
 
 
 class Compressor:
-    """Stage 2: convert raw TIFFs to the final format in low-priority threads, one
-    per spare CPU core (Pillow releases the GIL while encoding). The work list is
-    kept on disk, so a restart or power cut resumes it."""
+    """Stage 2: convert raw TIFFs to the final format. Each conversion runs as a
+    separate low-priority process (scripts/compress-image.py): encoding inside the app
+    process competed with the live preview and web requests, and its memory stayed
+    with the app. Workers scale with RAM (1 on a 1 GB Pi). The work list is kept on
+    disk, so a restart or power cut resumes it. Items may carry "after" = [kind, name]:
+    when the last item of that group is done, its auto-upload starts."""
 
     def __init__(self, state_file, workers=0):
         self.state_file = state_file
@@ -1148,8 +1151,7 @@ class Compressor:
             self.items = json.loads(state_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.items = []
-        # Leave one core for the camera, the web UI and the raw writer.
-        workers = workers or max(1, (os.cpu_count() or 2) - 1)
+        workers = workers or auto_compress_workers()
         for n in range(workers):
             threading.Thread(target=self._worker, daemon=True, name=f"compressor-{n}").start()
 
@@ -1158,30 +1160,39 @@ class Compressor:
         tmp.write_text(json.dumps(self.items), encoding="utf-8")
         os.replace(tmp, self.state_file)
 
-    def add(self, raw, final, upload=None):
+    def add(self, raw, final, upload=None, after=None):
         with self.lock:
             if not any(i["raw"] == str(raw) for i in self.items):
-                self.items.append({"raw": str(raw), "final": str(final), "upload": upload})
+                self.items.append({"raw": str(raw), "final": str(final), "upload": upload,
+                                   "after": list(after) if after else None})
                 self._persist()
             self.wake.notify()
 
-    def add_stack(self, stack_dir, name):
+    def add_stack(self, stack_dir, name, after=None):
         """Queue a stack's raw frames (kept frames, or a stack finished unprocessed)."""
         target = image_ext()
         if target == ".tif":
             return 0
         frames = [f for f in stack_frames(stack_dir, name) if f.suffix.lower() in (".tif", ".tiff")]
         for f in frames:
-            self.add(f, f.with_suffix(target))
+            self.add(f, f.with_suffix(target), after=after)
         return len(frames)
 
-    def _worker(self):
-        try:  # background work: yield the CPU to the camera, Flask and focus-stack
-            os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 15)
-        except (AttributeError, OSError):
-            pass
-        from PIL import Image
+    def pending_for(self, after):
+        with self.lock:
+            return sum(1 for i in self.items if i.get("after") == list(after))
 
+    def _convert(self, raw, final):
+        cmd = [sys.executable, str(COMPRESS_SCRIPT), str(raw), str(final),
+               str(int(CONFIG.get("png_compress_level", 1))), str(int(CONFIG.get("jpeg_quality", 95)))]
+        if shutil.which("ionice"):
+            cmd = ["ionice", "-c", "3"] + cmd  # disk: only when nothing else wants it
+        nice = (lambda: os.nice(15)) if os.name == "posix" else None
+        proc = subprocess.run(cmd, capture_output=True, text=True, preexec_fn=nice)
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr.strip().splitlines() or [f"exit code {proc.returncode}"])[-1])
+
+    def _worker(self):
         while True:
             # focus-stack needs all the RAM it can get (1 GB on a Pi 3B): pause meanwhile.
             while focus_stack_running():
@@ -1194,7 +1205,7 @@ class Compressor:
             started = time.time()
             try:
                 if stack_busy(final.parent.name):
-                    # focus-stack is reading these frames; move to the back, retry later
+                    # focus-stack or an upload is reading these frames; move to the back, retry later
                     with self.lock:
                         self.items.remove(item)
                         self.items.append(item)
@@ -1202,9 +1213,7 @@ class Compressor:
                     time.sleep(5)
                     continue
                 if raw.exists():
-                    with Image.open(raw) as img:
-                        img.load()
-                        save_image(img, final)
+                    self._convert(raw, final)
                     raw.unlink()
                     drop_thumb_for(raw)
                     log.info("compressed %s in %.1fs", final.name, time.time() - started)
@@ -1218,6 +1227,11 @@ class Compressor:
                     self.items.remove(item)
                 self.busy.discard(item["raw"])
                 self._persist()
+                after = item.get("after")
+                group_done = bool(after) and not any(i.get("after") == after for i in self.items)
+            if group_done:
+                log.info("all frames of %s %s compressed — starting its uploads", *after)
+                auto_upload(*after)
 
     def status(self):
         with self.lock:
@@ -1230,11 +1244,29 @@ def focus_stack_running():
 
 
 def stack_busy(name):
-    """A stack that is still being captured or processed must keep its raw frames."""
+    """A stack that is still being captured, processed or uploaded must keep its raw frames."""
     if active_stack and active_stack["name"] == name:
         return True
     job = latest_job("focus-stack", name)
-    return bool(job and job["status"] in ("queued", "running"))
+    if job and job["status"] in ("queued", "running"):
+        return True
+    with jobs_lock:
+        return any(j["kind"] == "upload" and j["name"] == f"stack:{name}" and j["status"] == "running"
+                   for j in jobs.values())
+
+
+COMPRESS_SCRIPT = BASE_DIR / "scripts" / "compress-image.py"
+
+
+def auto_compress_workers():
+    """PNG encoding holds a full frame per worker: scale with RAM, not cores."""
+    ram = meminfo_mb("MemTotal") or 4096
+    cores = os.cpu_count() or 2
+    if ram < 1500:
+        return 1  # Pi 3B (1 GB)
+    if ram < 3000:
+        return min(2, cores)
+    return max(1, cores - 1)
 
 
 def drop_thumb_for(path):
@@ -1358,6 +1390,8 @@ def write_sidecar(path, metadata, extra=None):
 jobs = {}
 jobs_lock = threading.Lock()
 stack_queue = None  # focus-stack jobs (queue.Queue), worked off by _stack_worker; set in main()
+upload_queue = None  # upload jobs, one at a time (Wi-Fi and USB are shared); set in main()
+last_capture = {"t": 0.0}  # time of the last photo, to keep uploads out of the way
 stack_order = []  # ids of focus-stack jobs still waiting, in queue order (guarded by jobs_lock)
 
 
@@ -1393,6 +1427,8 @@ def start_job(kind, name, fn, *args):
         with jobs_lock:
             stack_order.append(job["id"])
         stack_queue.put((job, runner))  # strictly one after another, in order
+    elif kind == "upload" and upload_queue is not None:
+        upload_queue.put((job, runner))
     else:
         threading.Thread(target=runner, daemon=True).start()
     return job
@@ -1407,6 +1443,26 @@ def _stack_worker():
                 stack_order.remove(job["id"])
         if not job.get("cancel"):
             runner()
+
+
+def foreground_busy():
+    """The user is shooting: keep uploads off the Wi-Fi and USB bus meanwhile."""
+    now = time.time()
+    return bool(active_stack or recording["active"] or (camera is not None and getattr(camera, "hold_full", False))
+                or now - last_capture["t"] < 20 or now - focus_hold["last"] < 20)
+
+
+def _upload_worker():
+    """Uploads one at a time, paused while capturing, stacking or using the focus check."""
+    while True:
+        job, runner = upload_queue.get()
+        noted = False
+        while foreground_busy() or focus_stack_running():
+            if not noted:
+                job_log(job, "Waiting until capturing and stacking are done…")
+                noted = True
+            time.sleep(3)
+        runner()
 
 
 def stack_queue_position(job_id):
@@ -1646,9 +1702,13 @@ def run_focus_stack(job, name, overrides):
         result["deleted_frames"] = delete_stack_frames(stack_dir, name)
         job_log(job, f"Deleted {result['deleted_frames']} source frames")
     else:
-        queued = compressor.add_stack(stack_dir, name)
+        frames_go_too = bool(CONFIG["upload"].get("stack_frames") and auto_upload_dests())
+        queued = compressor.add_stack(stack_dir, name, after=("stack", name) if frames_go_too else None)
         if queued:
             job_log(job, f"Queued {queued} kept frames for compression")
+        if queued and frames_go_too:
+            job_log(job, "Upload starts when the frames are compressed")
+            return result
     result["uploads"] = auto_upload("stack", name)
     return result
 
@@ -2312,7 +2372,33 @@ def api_status():
                             "available": storage_target() != "usb" or os.path.ismount(USB_MOUNT),
                             "label": CONFIG.get("storage", {}).get("label")},
                    preview_mode=getattr(camera, "mode", None),
-                   preview_stalled_s=camera.stream.seconds_without_frames())
+                   preview_stalled_s=camera.stream.seconds_without_frames(),
+                   background=background_summary(), load=load_summary())
+
+
+def background_summary():
+    """What runs in the background, as counts (header pill)."""
+    with jobs_lock:
+        active = [j for j in jobs.values() if j["status"] in ("queued", "running")]
+    count = lambda kind: sum(1 for j in active if j["kind"] == kind)
+    return {"stacking": count("focus-stack"), "uploading": count("upload"),
+            "other": sum(1 for j in active if j["kind"] not in ("focus-stack", "upload", "sweep")),
+            "saving": len(save_queue.status()["pending"]), "compressing": compressor.status()["queued"]}
+
+
+def load_summary():
+    """CPU / memory / temperature for the header pill — cheap /proc and /sys reads only."""
+    total, avail = meminfo_mb("MemTotal"), meminfo_mb("MemAvailable")
+    swap_total, swap_free = meminfo_mb("SwapTotal"), meminfo_mb("SwapFree")
+    temp = read_text("/sys/class/thermal/thermal_zone0/temp")
+    rss = None
+    for line in (read_text("/proc/self/status", "") or "").splitlines():
+        if line.startswith("VmRSS:"):
+            rss = int(line.split()[1]) // 1024
+    return {"cpu": cpu_usage_percent("status"),
+            "mem_pct": round(100 * (1 - avail / total)) if total and avail is not None else None,
+            "swap_used_mb": swap_total - swap_free if swap_total and swap_free is not None else None,
+            "app_mb": rss, "temp_c": round(int(temp) / 1000, 1) if temp else None}
 
 
 @app.route("/api/autofocus/trigger", methods=["POST"])
@@ -2405,6 +2491,7 @@ def focus_hold_watchdog():
 def api_capture():
     if recording["active"]:
         return jsonify(ok=False, error="recording in progress"), 409
+    last_capture["t"] = time.time()
     label = (request.get_json(silent=True) or {}).get("label", "")
     directory, ext = data_dir("photos"), image_ext()
     stem = unique_stem(directory, build_basename(label), ext)
@@ -2527,9 +2614,12 @@ def api_stack_end():
     elif finished["count"]:
         def compress_then_upload(name=finished["name"], stack_dir=Path(finished["dir"])):
             save_queue.wait_idle()
-            compressor.add_stack(stack_dir, name)
             if CONFIG["upload"].get("stack_frames"):
-                auto_upload("stack", name)  # processed stacks upload after processing
+                # processed stacks upload after processing; unprocessed ones after compression
+                if not compressor.add_stack(stack_dir, name, after=("stack", name)):
+                    auto_upload("stack", name)
+            else:
+                compressor.add_stack(stack_dir, name)
         threading.Thread(target=compress_then_upload, daemon=True).start()
     return jsonify(ok=True, name=finished["name"], frames=finished["count"],
                    job=job and job["id"], uploads=uploads)
@@ -3298,15 +3388,15 @@ def read_text(path, default=None):
 _cpu_sample = {}
 
 
-def cpu_usage_percent():
-    """CPU busy % since the previous call (from /proc/stat)."""
+def cpu_usage_percent(key="last"):
+    """CPU busy % since the previous call with the same key (from /proc/stat)."""
     line = read_text("/proc/stat", "").splitlines()[:1]
     if not line:
         return None
     values = [int(v) for v in line[0].split()[1:]]
     idle, total = values[3] + values[4], sum(values)
-    prev = _cpu_sample.get("last")
-    _cpu_sample["last"] = (idle, total)
+    prev = _cpu_sample.get(key)
+    _cpu_sample[key] = (idle, total)
     if not prev or total == prev[1]:
         return None
     return round(100 * (1 - (idle - prev[0]) / (total - prev[1])), 1)
@@ -3598,10 +3688,12 @@ def main():
     logging.getLogger().addHandler(memory_log)
     if args.demo:
         os.environ["MINIATURESTUDIO_DEMO"] = "1"
-    global save_queue, compressor, stack_queue
+    global save_queue, compressor, stack_queue, upload_queue
     import queue
     stack_queue = queue.Queue()
     threading.Thread(target=_stack_worker, daemon=True, name="focus-stack-queue").start()
+    upload_queue = queue.Queue()
+    threading.Thread(target=_upload_worker, daemon=True, name="upload-queue").start()
     save_queue = SaveQueue(int(CONFIG["camera"].get("save_queue", 2)))
     compressor = Compressor(BASE_DIR / ".compress_queue.json", int(CONFIG["camera"].get("compress_workers", 0)))
     prepare_af_tuning()

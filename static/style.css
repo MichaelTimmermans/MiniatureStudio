@@ -198,3 +198,15 @@ fieldset.flash { border-color: var(--warn); box-shadow: 0 0 0 2px var(--warn); t
   border-radius: 6px; cursor: pointer; }
 .seg label:has(input:checked) { border-color: var(--accent, #4a9eff); background: rgba(74, 158, 255, .12); }
 #camera-check-verdict { white-space: pre-line; }
+
+/* Focus crop as an overlay in a top corner of the preview (moves aside for the focus point). */
+#preview-wrap #focus-check { position: absolute; top: 6px; right: 6px; width: 40%; margin: 0;
+  background: rgba(0, 0, 0, .7); border: 1px solid var(--border); border-radius: 4px; padding: 3px;
+  pointer-events: none; z-index: 2; }
+#preview-wrap #focus-check.left { right: auto; left: 6px; }
+#preview-wrap #focus-check[hidden] { display: none; }
+#preview-wrap #focus-check img { width: 100%; max-height: none; aspect-ratio: 4 / 3; object-fit: contain;
+  display: block; margin: 0 0 2px; border: none; }
+#preview-wrap #focus-check .small { font-size: 11px; line-height: 1.2; padding: 0 2px; }
+.badge.busy { border-color: var(--accent); color: var(--accent); }
+button.badge { cursor: pointer; font-family: inherit; font-size: 12px; padding: 2px 8px; line-height: inherit; }

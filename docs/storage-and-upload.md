@@ -41,5 +41,6 @@ unplugging. A USB SSD is the fastest and most durable option.
   `/etc/miniaturestudio/nas.cred`, readable by root only. The app refuses to copy
   when the share is not mounted, so the SD card never fills up.
 
-Uploads run in the background as jobs; manual **→ Drive** / **→ NAS** buttons
-are on every photo and stack as well.
+Uploads run in the background as jobs, one at a time, after compression and
+paused while you are shooting (see [Speed](speed.md)); manual **→ Drive** /
+**→ NAS** buttons are on every photo and stack as well.

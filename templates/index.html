@@ -21,6 +21,10 @@
         <div id="focus-marker" hidden></div>
         <canvas id="clip-overlay" hidden></canvas>
         <div id="crop-box" hidden title="Drag to move the crop"></div>
+        <div id="focus-check" hidden>
+          <img id="focus-crop" alt="Focus crop">
+          <div class="small">Sharpness <strong id="sharpness">–</strong> <span class="muted">· best <span id="sharpness-max">–</span></span></div>
+        </div>
         <div id="busy-overlay" hidden>
           <div class="busy-box">
             <div class="spinner"></div>
@@ -28,10 +32,6 @@
             <div class="muted small">Hold still — saving continues in the background</div>
           </div>
         </div>
-      </div>
-      <div id="focus-check" class="panel" hidden>
-        <img id="focus-crop" alt="Focus crop">
-        <div class="small">Sharpness <strong id="sharpness">–</strong> <span class="muted">· best <span id="sharpness-max">–</span> · click the preview to move the focus point</span></div>
       </div>
     </div>
     <div class="studio-side">

@@ -73,12 +73,25 @@ function renderBadges() {
   if (info.nas) b.append(el("span", { class: "badge ok" }, "NAS ✓"));
   if (info.has_autofocus) b.append(el("span", { class: "badge" }, "AF"));
   if (status.recording?.active) b.append(el("span", { class: "badge rec" }, "● REC"));
-  const writing = status.saving?.pending?.length || 0;
-  const compressing = status.compressing?.queued || 0;
-  if (writing || compressing) {
-    b.append(el("span", { class: "badge", title: "Background work — you can keep shooting" },
-      [writing ? `💾 writing ${writing}` : null, compressing ? `🗜 compressing ${compressing}` : null]
-        .filter(Boolean).join(" · ")));
+  // Background work at a glance (details in the tooltip and the Jobs tab).
+  const bg = status.background || {};
+  const work = [["stacking", bg.stacking], ["writing", bg.saving], ["compressing", bg.compressing],
+    ["uploading", bg.uploading], ["other jobs", bg.other]].filter(([, n]) => n);
+  b.append(el("button", { class: "badge " + (work.length ? "busy" : "ok"),
+    title: work.length ? `Background: ${work.map(([k, n]) => `${k} ${n}`).join(", ")} — you can keep shooting`
+      : "Nothing running in the background",
+    onclick: () => document.querySelector('#tabs button[data-tab="jobs"]').click() },
+    work.length ? "⚙ busy" : "✓ idle"));
+  const ld = status.load;
+  if (ld && ld.mem_pct != null) {
+    const heavy = ld.mem_pct > 85 || (ld.swap_used_mb || 0) > 150 || (ld.temp_c || 0) >= 75;
+    b.append(el("button", { class: "badge " + (heavy ? "warn" : ""),
+      title: `CPU ${ld.cpu ?? "–"}% · memory ${ld.mem_pct}% used · swap ${ld.swap_used_mb ?? "–"} MB in use`
+        + ` · app ${ld.app_mb ?? "–"} MB · ${ld.temp_c ?? "–"} °C`
+        + (heavy ? " — the Pi is short on memory or hot, so it reacts slowly" : ""),
+      onclick: () => document.querySelector('#tabs button[data-tab="system"]').click() },
+      `CPU ${ld.cpu != null ? Math.round(ld.cpu) : "–"}% · RAM ${ld.mem_pct}%`
+        + (ld.temp_c != null ? ` · ${Math.round(ld.temp_c)}°C` : "")));
   }
   const st = status.storage;
   if (st?.target === "usb") {
@@ -317,6 +330,12 @@ function setFocusPoint(e) {
   m.style.left = focusPoint.x * 100 + "%";
   m.style.top = focusPoint.y * 100 + "%";
   sharpMax = 0;
+  placeFocusCrop();
+}
+// The focus crop sits in the top-right corner of the preview, or top-left when the
+// focus point is under it.
+function placeFocusCrop() {
+  $("#focus-check").classList.toggle("left", focusPoint.x > 0.5 && focusPoint.y < 0.55);
 }
 $("#preview").addEventListener("click", setFocusPoint);
 $("#toggle-focus").addEventListener("change", (e) => {
@@ -325,6 +344,7 @@ $("#toggle-focus").addEventListener("change", (e) => {
   $("#focus-marker").hidden = !on;
   clearTimeout(focusTimer);
   sharpMax = 0;
+  placeFocusCrop();
   if (on) focusLoop();
   else api("/api/focus_check/stop", "POST", {}).catch(() => {});  // back to the fast preview
 });
