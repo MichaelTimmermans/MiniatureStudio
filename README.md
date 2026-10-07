@@ -127,6 +127,26 @@ varifocal lens, in a black booth — the 3D-printable parts are on Thingiverse:
 [thing:7416432](https://www.thingiverse.com/thing:7416432). A USB webcam
 (Sony IMX179) works too. Details and other cameras: [Hardware](docs/hardware.md).
 
+## Which Raspberry Pi?
+
+MiniatureStudio runs on a Pi 3B, but 12 MP stacking is heavy work. **Memory
+matters most** (1 GB means swapping while stacking and compressing), then
+**USB 3** for the disk, then CPU speed. The app scales its stacking threads and
+compression workers with the RAM it finds.
+
+| | Absolute minimum | Proper minimum | Recommended |
+|---|---|---|---|
+| **Pi** | Pi 3B, 1 GB (the tested booth) | Pi 4, 2 GB | **Pi 4, 4 GB** |
+| **Disk** | USB 2 only (~35 MB/s max) | USB 3 | USB 3 SSD or fast stick |
+| **Stack 8 frames (halo-free)** | 132-176 s *(measured)* | ~60-90 s *(expected)* | ~60-90 s *(expected)* |
+| **PNG compression, per 12 MP frame** | 10-15 s *(measured)* | ~5-7 s *(expected)* | ~5-7 s, 2-3 at a time *(expected)* |
+| **Writing one raw frame** | 5-10 s on a cheap stick *(seen)*, ~1.5-2 s at best | well under 1 s | well under 1 s |
+| **Working while it processes** | slows down noticeably; one job at a time | fine | smooth |
+
+A **Pi 5 (4 GB)** is faster still (stacking roughly twice a Pi 4) and can use an
+NVMe SSD, but needs a different camera cable, a 27 W power supply and active
+cooling. 8 GB is not needed. More in [Hardware](docs/hardware.md#raspberry-pi-3b-notes).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
