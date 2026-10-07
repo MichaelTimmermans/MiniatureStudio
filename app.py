@@ -1420,6 +1420,7 @@ jobs_lock = threading.Lock()
 stack_queue = None  # focus-stack jobs (queue.Queue), worked off by _stack_worker; set in main()
 upload_queue = None  # upload jobs, one at a time (Wi-Fi and USB are shared); set in main()
 last_capture = {"t": 0.0}  # time of the last photo, to keep uploads out of the way
+activity = {"t": time.time()}  # last capture / stack / focus check / video: "idle" is measured from here
 stack_order = []  # ids of focus-stack jobs still waiting, in queue order (guarded by jobs_lock)
 
 
@@ -1466,11 +1467,67 @@ def _stack_worker():
     """Runs focus-stack jobs one at a time, first come first served (Pi RAM)."""
     while True:
         job, runner = stack_queue.get()
+        noted = False
+        # Idle mode: shooting again pauses the queue; the stack already running finishes.
+        # A Process button press ("now") is not held back.
+        while processing_mode() == "idle" and foreground_busy() and not job.get("cancel") and not job.get("now"):
+            if not noted:
+                job_log(job, "Waiting until you stop shooting…")
+                noted = True
+            time.sleep(3)
         with jobs_lock:
             if job["id"] in stack_order:
                 stack_order.remove(job["id"])
         if not job.get("cancel"):
             runner()
+
+
+def processing_mode():
+    """When finished stacks are processed: immediate, idle (after idle_minutes without
+    shooting) or manual (Process buttons only)."""
+    mode = CONFIG.get("processing", {}).get("mode", "idle")
+    return mode if mode in ("immediate", "idle", "manual") else "idle"
+
+
+def note_activity():
+    activity["t"] = time.time()
+
+
+def idle_for():
+    """Seconds since the user last captured, stacked, recorded or used the focus check."""
+    if foreground_busy():
+        return 0.0
+    return time.time() - max(activity["t"], last_capture["t"], focus_hold["last"])
+
+
+def idle_processor():
+    """Processing mode 'idle': once nobody has shot anything for idle_minutes, queue
+    every unprocessed stack (they run one after another; compression and uploads
+    follow, as always). Stacks whose processing failed are not retried in a loop."""
+    while True:
+        time.sleep(30)
+        try:
+            idle_check()
+        except StorageUnavailable:
+            pass
+        except Exception:
+            log.exception("Idle processing check failed")
+
+
+def idle_check():
+    if processing_mode() != "idle" or active_stack or recording["active"]:
+        return []
+    minutes = float(CONFIG.get("processing", {}).get("idle_minutes", 5))
+    if idle_for() < minutes * 60:
+        return []
+    names = [n for n in unprocessed_stacks()
+             if not ((j := latest_job("focus-stack", n)) and j["status"] == "error")]
+    for name in names:
+        start_job("focus-stack", name, run_focus_stack, name, None)
+    if names:
+        log.info("Idle for %.0f min: processing %d stack(s)", minutes, len(names))
+    _waiting_cache["at"] = 0.0
+    return names
 
 
 def foreground_busy():
@@ -1975,6 +2032,7 @@ def run_sweep(job, name, positions, settle_ms, process):
             active_stack = None
         unlock_exposure(exposure_state)
         focus_hold["last"] = time.time()  # watchdog returns to the fast preview shortly
+        note_activity()
     result = {"frames": count}
     if process and count >= 2 and not job.get("cancel"):
         result["process_job"] = start_job("focus-stack", name, run_focus_stack, name, None)["id"]
@@ -2417,12 +2475,26 @@ def safe_used_pct():
         return None
 
 
+_waiting_cache = {"at": 0.0, "n": 0}
+
+
+def stacks_waiting():
+    if time.time() - _waiting_cache["at"] > 20:
+        try:
+            _waiting_cache["n"] = len(unprocessed_stacks())
+        except Exception:
+            _waiting_cache["n"] = 0
+        _waiting_cache["at"] = time.time()
+    return _waiting_cache["n"]
+
+
 def background_summary():
     """What runs in the background, as counts (header pill)."""
     with jobs_lock:
         active = [j for j in jobs.values() if j["status"] in ("queued", "running")]
     count = lambda kind: sum(1 for j in active if j["kind"] == kind)
     return {"stacking": count("focus-stack"), "uploading": count("upload"),
+            "waiting": stacks_waiting(), "mode": processing_mode(),
             "other": sum(1 for j in active if j["kind"] not in ("focus-stack", "upload", "sweep")),
             "saving": len(save_queue.status()["pending"]), "compressing": compressor.status()["queued"]}
 
@@ -2534,6 +2606,7 @@ def api_capture():
         return jsonify(ok=False, error="recording in progress"), 409
     check_space()
     last_capture["t"] = time.time()
+    note_activity()
     label = (request.get_json(silent=True) or {}).get("label", "")
     directory, ext = data_dir("photos"), image_ext()
     stem = unique_stem(directory, build_basename(label), ext)
@@ -2559,6 +2632,7 @@ def api_video_start():
         if active_stack:
             return jsonify(ok=False, error="finish the stack first"), 409
         check_space()
+        note_activity()
         recording["active"] = True
     directory = data_dir("videos")
     stem = unique_stem(directory, build_basename(label), ".mp4")
@@ -2583,6 +2657,7 @@ def api_video_stop():
     if not recording["active"]:
         return jsonify(ok=False, error="not recording"), 409
     path, duration, uploads = stop_recording()
+    note_activity()
     return jsonify(ok=True, file=path.name if path else None, seconds=round(duration, 1), uploads=uploads)
 
 
@@ -2625,6 +2700,7 @@ def api_stack_start():
         if recording["active"]:
             return jsonify(ok=False, error="recording in progress"), 409
         check_space()
+        note_activity()
         base = data_dir("stacks")
         name = unique_stem(base, build_basename(label), "")
         stack_dir = base / name
@@ -2644,6 +2720,7 @@ def api_stack_frame():
         if active_stack.get("sweep"):
             return jsonify(ok=False, error="a lens sweep is running"), 409
         check_space()
+        note_activity()
         active_stack["count"] += 1
         n, name, stack_dir = active_stack["count"], active_stack["name"], Path(active_stack["dir"])
     path = stack_dir / f"{name}_{n}{image_ext()}"
@@ -2671,11 +2748,13 @@ def api_stack_end():
             return jsonify(ok=False, error="a lens sweep is running — cancel it instead"), 409
         finished, active_stack = active_stack, None
     unlock_exposure(finished.get("exposure_lock"))
-    body = request.get_json(silent=True) or {}
-    job, uploads = None, []
-    # AF cameras always auto-stack; manual-focus rigs decide per stack.
-    if (body.get("process") or camera.has_autofocus) and finished["count"] >= 2:
-        job = start_job("focus-stack", finished["name"], run_focus_stack, finished["name"], None)
+    note_activity()
+    job, uploads, mode = None, [], processing_mode()
+    if finished["count"] >= 2:
+        # Processed now, or left as raw TIFFs until idle / a Process button (no
+        # compression meanwhile: the stacker reads the raw frames fastest).
+        if mode == "immediate":
+            job = start_job("focus-stack", finished["name"], run_focus_stack, finished["name"], None)
     elif finished["count"]:
         def compress_then_upload(name=finished["name"], stack_dir=Path(finished["dir"])):
             save_queue.wait_idle()
@@ -2687,7 +2766,7 @@ def api_stack_end():
                 compressor.add_stack(stack_dir, name)
         threading.Thread(target=compress_then_upload, daemon=True).start()
     return jsonify(ok=True, name=finished["name"], frames=finished["count"],
-                   job=job and job["id"], uploads=uploads)
+                   job=job and job["id"], uploads=uploads, processing=mode)
 
 
 @app.route("/api/stack/sweep", methods=["POST"])
@@ -2721,7 +2800,8 @@ def api_stack_sweep():
         (base / name / "stack.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         active_stack = {"name": name, "dir": str(base / name), "count": 0, "sweep": True, "total": steps}
     active_stack["exposure_lock"] = lock_exposure_for_stack()
-    job = start_job("sweep", name, run_sweep, name, sweep_positions(start, end, steps), settle, True)
+    job = start_job("sweep", name, run_sweep, name, sweep_positions(start, end, steps), settle,
+                    processing_mode() == "immediate")
     active_stack["job"] = job["id"]
     return jsonify(ok=True, name=name, job=job["id"])
 
@@ -2758,6 +2838,7 @@ def api_stack_process(name):
     if unknown:
         return jsonify(ok=False, error=f"unknown options: {sorted(unknown)}"), 400
     job = start_job("focus-stack", name, run_focus_stack, name, overrides)
+    job["now"] = True  # pressed by the user: not held back while shooting
     return jsonify(ok=True, job=job["id"])
 
 
@@ -2782,7 +2863,11 @@ def api_stacks_process_all():
     if unknown:
         return jsonify(ok=False, error=f"unknown options: {sorted(unknown)}"), 400
     names = unprocessed_stacks()
-    ids = [start_job("focus-stack", n, run_focus_stack, n, overrides)["id"] for n in names]
+    ids = []
+    for n in names:
+        job = start_job("focus-stack", n, run_focus_stack, n, overrides)
+        job["now"] = True  # pressed by the user: not held back while shooting
+        ids.append(job["id"])
     return jsonify(ok=True, queued=len(ids), stacks=names, jobs=ids)
 
 
@@ -2985,7 +3070,7 @@ def api_upload():
 
 EDITABLE_SETTINGS = {"filename_pattern", "image_format", "jpeg_quality", "png_compress_level",
                      "save_metadata", "persist_controls", "next_seq", "focus_stack", "upload",
-                     "video", "camera", "sweep", "ui", "crop"}
+                     "video", "camera", "sweep", "ui", "crop", "processing"}
 
 
 @app.route("/api/settings", methods=["GET", "POST"])
@@ -3793,6 +3878,7 @@ def main():
     upload_queue = queue.Queue()
     threading.Thread(target=_upload_worker, daemon=True, name="upload-queue").start()
     threading.Thread(target=space_watchdog, daemon=True, name="space-watchdog").start()
+    threading.Thread(target=idle_processor, daemon=True, name="idle-processor").start()
     if os.name != "nt":  # the Pi; a dev checkout on Windows needs no banner
         threading.Thread(target=update_checker, daemon=True, name="update-checker").start()
     save_queue = SaveQueue(int(CONFIG["camera"].get("save_queue", 2)))

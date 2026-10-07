@@ -41,6 +41,10 @@ const HELP = {
   AfMetering: "Where autofocus measures sharpness. Auto: the camera decides. Windows: specific areas (not set by this app).",
   LensPosition: "Lens focus distance in dioptres = 1 / distance in metres. 0 = infinity, 2 = 50 cm, 4 = 25 cm, 10 = 10 cm. Higher = closer. For the lens sweep set start and end around your model.",
 
+  // ---------------------------------------------------------------- stack processing
+  mode: "When finished stacks are stacked. 'When idle': nothing heavy runs while you shoot; once you have not captured anything for the idle time, all waiting stacks are processed one after another, then compressed and uploaded. 'Immediately': each stack right after Finish (slows the Pi while you keep shooting). 'Manually': only when you press Process / Process all in the Stacks tab.",
+  idle_minutes: "Minutes without capturing, stacking, video or focus check before waiting stacks are processed (mode 'When idle').",
+
   // ---------------------------------------------------------------- camera check
   camera_check: "Shows the cameras the Pi detects, the camera lines in config.txt and the kernel's camera messages, with a verdict — no SSH needed.",
 
@@ -60,7 +64,7 @@ const HELP = {
   lock_exposure_in_stacks: "At the start of a stack, freeze auto exposure and white balance so every frame matches. Frames that differ in brightness or colour cause halos. Auto returns after the stack.",
   preview_mode: "fast: the live view uses a quick half-resolution sensor mode and switches to full resolution for each capture — smooth preview; with auto exposure/white balance the photo waits a moment until they settle. Each switch reserves ~55 MB of camera memory: on a 1 GB Pi 3B that can take several seconds when memory is busy. full: preview and photo use the very same sensor mode — no switch, near-instant captures and exactly what you see, but a slower preview (max ~10 frames per second). Long exposure times slow any preview down (1/5 s = 5 frames per second).",
   save_queue: "How many captured frames may wait to be written at once. Each one takes ~36 MB of RAM (12 MP). On a 1 GB Pi 3B keep 2.",
-  compress_workers: "Background workers that compress TIFF to PNG. 0 = one per CPU core minus one. They run at low priority. Applies after a restart.",
+  compress_workers: "Background workers that compress TIFF to PNG, each as a separate low-priority process. 0 = automatic by RAM: 1 on a 1 GB Pi, 2 on 2 GB, one per spare CPU core above that. Applies after a restart.",
 
   // ---------------------------------------------------------------- Settings: upload
   auto_drive: "Upload photos, videos and finished stacks to Google Drive automatically as soon as they are saved (needs Connect Google Drive).",

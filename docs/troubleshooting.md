@@ -41,6 +41,12 @@ and shut down are there too.
   (look for `ak7375` / `vcm` errors in the kernel messages; reseat the ribbon
   cable). Also mind the minimum focus distance: the IMX519 focuses down to
   roughly 10 cm.
+- **The Pi gets slow during a long session** — hover the **CPU · RAM** pill in
+  the header: orange means it is short on memory (swapping) or hot. Keep
+  **Settings → Stack processing** on **When idle**, so stacking does not run
+  while you shoot. If it stays slow with nothing running (header **✓ idle**),
+  **System → Restart app**; if only a reboot helps, note the pill's values and
+  report it.
 - **The page briefly says "focus-stack missing" after an update** — it was opened
   while the app restarted; it retries by itself.
 

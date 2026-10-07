@@ -16,8 +16,10 @@ else runs in the background, so you can keep shooting:
    core above that (PNG encoding of a 12 MP frame takes 10-15 s on a Pi 3B).
    Stack frames are never compressed if they are deleted after stacking — the
    stacker reads the TIFFs directly.
-4. **Stacking** runs as jobs, one stack at a time, at low priority so the camera
-   and UI stay responsive.
+4. **Stacking** runs as jobs, one stack at a time, at low priority. By default
+   it waits until you stop shooting for a few minutes (**Settings → Stack
+   processing**, see [Focus stacking](focus-stacking.md#processing)), so the
+   heaviest work never slows down the preview and captures.
 5. **Uploads** run one at a time, after compression (a stack whose frames are
    uploaded goes once all its frames are compressed), and wait while you are
    capturing, stacking or using the focus check, so they never compete with the
@@ -26,9 +28,11 @@ else runs in the background, so you can keep shooting:
 The header shows **✓ idle** or **⚙ busy** (hover for what is running, click for
 the Jobs tab), plus a **CPU · RAM · temperature** pill; it turns orange when the
 Pi is short on memory (swapping) or hot — then it reacts slowly. Click it for
-the System tab. Set the image
-format to `tif` to skip compression entirely (files ~1.8× larger); TIFF files
-then get a **Download PNG** button that compresses on download.
+the System tab.
+
+Set the image format to `tif` to skip compression entirely (files ~1.8×
+larger); TIFF files then get a **Download PNG** button that compresses on
+download.
 
 Cropping (see [Cropping](cropping.md)) also speeds everything up: fewer pixels
 to write, compress and stack.

@@ -104,7 +104,7 @@
         <button id="btn-stack-end" class="manual-only" disabled>Finish</button>
         <button id="btn-sweep-cancel" hidden>Cancel sweep</button>
       </div>
-      <label class="small" id="stack-autoprocess-label"><input type="checkbox" id="stack-autoprocess" checked> Process right after finishing</label>
+      <div class="muted small" id="processing-hint"></div>
 
       <div id="sweep-box" hidden>
         <div class="grid2">
@@ -118,7 +118,7 @@
           <button id="btn-sweep-to">Current → end</button>
         </div>
         <div class="muted small">LensPosition in dioptres: 0 = infinity, higher = closer. Current: <span id="lens-now">–</span>.
-          Frames are stacked automatically after the sweep.</div>
+          The sweep becomes a stack like a manual one (see the processing note above).</div>
       </div>
 
       <h3>Video</h3>

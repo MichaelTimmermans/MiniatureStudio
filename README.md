@@ -61,10 +61,11 @@ painted with Black 3.0. The 3D-printable parts are on Thingiverse:
 - Photos, video, and **focus stacking** — manual, or an automatic lens sweep on
   autofocus cameras — with a halo-free method made for black backdrops
 - Crop to a tall or wide frame before shooting
-- Fast captures: saving, compressing, stacking and uploading run in the background
+- Fast captures: saving, compressing, stacking and uploading run in the
+  background — by default stacking waits until you pause shooting
 - Storage on the SD card or a USB disk; upload to Google Drive or a NAS
 - Gallery with multi-select, System tab with Pi stats, logs, reboot/shutdown
-- Updates from the web app; runs on a Raspberry Pi 3B
+- Update banner and one-click updates from the web app; runs on a Raspberry Pi 3B
 
 ## Install
 
@@ -124,8 +125,9 @@ missing"; the page retries by itself.
 
 Raspberry Pi 3B, Raspberry Pi HQ Camera (IMX477) with a 5-50 mm C-mount
 varifocal lens, in a black booth — the 3D-printable parts are on Thingiverse:
-[thing:7416432](https://www.thingiverse.com/thing:7416432). A USB webcam
-(Sony IMX179) works too. Details and other cameras: [Hardware](docs/hardware.md).
+[thing:7416432](https://www.thingiverse.com/thing:7416432). The Arducam 16 MP
+(IMX519) autofocus camera, with autofocus and lens sweep, and a USB webcam
+(Sony IMX179) work too. Details and other cameras: [Hardware](docs/hardware.md).
 
 ## Which Raspberry Pi?
 

@@ -44,6 +44,10 @@
     ],
     "bitrate": 10000000
   },
+  "processing": {
+    "mode": "idle",
+    "idle_minutes": 5
+  },
   "focus_stack": {
     "method": "halofree",
     "halofree_threshold": 40,

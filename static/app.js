@@ -77,11 +77,13 @@ function renderBadges() {
   const bg = status.background || {};
   const work = [["stacking", bg.stacking], ["writing", bg.saving], ["compressing", bg.compressing],
     ["uploading", bg.uploading], ["other jobs", bg.other]].filter(([, n]) => n);
-  b.append(el("button", { class: "badge " + (work.length ? "busy" : "ok"),
-    title: work.length ? `Background: ${work.map(([k, n]) => `${k} ${n}`).join(", ")} — you can keep shooting`
-      : "Nothing running in the background",
+  const waitNote = bg.waiting ? ` ${bg.waiting} stack${bg.waiting === 1 ? "" : "s"} waiting to be processed`
+    + (bg.mode === "idle" ? " (starts when you stop shooting for a while)" : bg.mode === "manual" ? " (Stacks tab → Process)" : "") + "." : "";
+  b.append(el("button", { class: "badge " + (work.length ? "busy" : bg.waiting ? "" : "ok"),
+    title: (work.length ? `Background: ${work.map(([k, n]) => `${k} ${n}`).join(", ")} — you can keep shooting.`
+      : "Nothing running in the background.") + waitNote,
     onclick: () => document.querySelector('#tabs button[data-tab="jobs"]').click() },
-    work.length ? "⚙ busy" : "✓ idle"));
+    work.length ? "⚙ busy" : bg.waiting ? `⏸ ${bg.waiting} to stack` : "✓ idle"));
   const ld = status.load;
   if (ld && ld.mem_pct != null) {
     const heavy = ld.mem_pct > 85 || (ld.swap_used_mb || 0) > 150 || (ld.temp_c || 0) >= 75;
@@ -190,7 +192,6 @@ function showStackMode() {
   const sweep = stackMode() === "sweep";
   $("#sweep-box").hidden = !sweep;
   document.querySelectorAll(".manual-only").forEach((e) => { e.hidden = sweep; });
-  $("#stack-autoprocess-label").hidden = sweep || !!info.has_autofocus;  // AF: always auto-stacked
   $("#stack-mode-hint").textContent = sweep
     ? "The app steps the lens from start to end, takes a frame at each position and stacks them."
     : (info.has_autofocus
@@ -229,8 +230,11 @@ async function stackFrame() {
 $("#btn-stack-frame").addEventListener("click", stackFrame);
 
 $("#btn-stack-end").addEventListener("click", () => guarded(async () => {
-  const r = await api("/api/stack/end", "POST", { process: $("#stack-autoprocess").checked });
-  say(`Stack ${r.name} finished (${r.frames} frames)` + (r.job ? " — processing started" : "") + uploadNote(r));
+  const r = await api("/api/stack/end", "POST", {});
+  const when = { idle: " — it is stacked once you stop shooting for a while",
+    manual: " — press Process in the Stacks tab when you want it stacked" }[r.processing] || "";
+  say(`Stack ${r.name} finished (${r.frames} frames)` + (r.job ? " — processing started" : r.frames >= 2 ? when : "")
+    + uploadNote(r));
   if (r.job) watchJob(r.job);
   refreshStatus();
 }));
@@ -1125,8 +1129,6 @@ function stackCard(s) {
     frames);
 }
 
-// AF cameras auto-stack, so there the button only appears as a retry for
-// stacks that failed or never got processed.
 function processButton(s) {
   const busy = s.job && ["queued", "running"].includes(s.job.status);
   if (s.open && !status.stack?.sweep) {
@@ -1135,10 +1137,9 @@ function processButton(s) {
       onclick: () => { $("#btn-stack-end").click(); setTimeout(loadStacks, 1500); } }, "Finish stack");
   }
   if (s.open || busy || s.frames.length < 2 || !info.focus_stack?.available) {
-    return info.has_autofocus ? null : el("button", { class: "primary", disabled: true }, "Process stack");
+    return el("button", { class: "primary", disabled: true }, "Process stack");
   }
-  if (info.has_autofocus && s.outputs.result && s.job?.status !== "error") return null;
-  const retry = info.has_autofocus || s.outputs.result;
+  const retry = s.outputs.result;
   return el("button", { class: "primary", onclick: () => guarded(async () => {
     const r = await api(`/api/stack/process/${enc(s.name)}`, "POST", { options: processOptions() });
     say(`Processing ${s.name} started`);
@@ -1234,7 +1235,8 @@ const FOCUS_STACK_FIELDS = {
 function fieldFor(key, meta, value) {
   let input;
   if (meta.options) {
-    input = el("select", { "data-key": key }, meta.options.map((o) => el("option", { value: o, selected: o === value }, o)));
+    input = el("select", { "data-key": key }, meta.options.map((o) =>
+      el("option", { value: o, selected: o === value }, meta.optionLabels?.[o] || o)));
   } else if (meta.type === "checkbox") {
     input = el("input", { type: "checkbox", "data-key": key, checked: !!value });
   } else {
@@ -1282,7 +1284,12 @@ const SETTINGS_SECTIONS = [
     lock_exposure_in_stacks: { label: "Lock exposure & white balance during a stack (prevents brightness/colour shifts between frames — a common cause of halos)", type: "checkbox" },
     preview_mode: { label: "Live preview (fast = binned sensor mode, switches to full-res for each capture; full = always full-res, slower preview)", options: ["fast", "full"] },
     save_queue: { label: "Frames waiting to be written (each ~36 MB RAM; Pi 3B: 2)", type: "number" },
-    compress_workers: { label: "Compression workers (0 = one per CPU core minus one; applies after restart)", type: "number" },
+    compress_workers: { label: "Compression workers (0 = automatic by RAM: 1 on a 1 GB Pi; applies after restart)", type: "number" },
+  }],
+  ["Stack processing", "processing", {
+    mode: { label: "When finished stacks are processed", options: ["idle", "immediate", "manual"],
+      optionLabels: { idle: "When idle (recommended)", immediate: "Immediately after each stack", manual: "Manually (Stacks tab)" } },
+    idle_minutes: { label: "Idle time before processing starts (minutes)", type: "number" },
   }],
   ["Upload", "upload", {
     auto_drive: { label: "Upload to Google Drive automatically (when connected)", type: "checkbox" },
@@ -1301,6 +1308,15 @@ const SETTINGS_SECTIONS = [
   ["Stacking default options", "focus_stack", FOCUS_STACK_FIELDS],
 ];
 
+function showProcessingHint() {
+  const mode = settings.processing?.mode || "idle";
+  $("#processing-hint").textContent = {
+    idle: `Finished stacks are processed once you stop shooting for ${settings.processing?.idle_minutes ?? 5} min (Settings → Stack processing).`,
+    immediate: "Finished stacks are processed right away (Settings → Stack processing).",
+    manual: "Finished stacks wait for Process in the Stacks tab (Settings → Stack processing).",
+  }[mode] || "";
+}
+
 async function loadSettings() {
   const r = await api("/api/settings");
   settings = r.settings;
@@ -1313,6 +1329,7 @@ async function loadSettings() {
     form.append(fs);
   }
   form.append(el("p", { class: "muted small" }, `Example: ${r.example_name}. Preview/video resolution live in config.json (restart needed).`));
+  showProcessingHint();
   const sw = settings.sweep;
   if (sw && !$("#sweep-start").value) {
     $("#sweep-start").value = sw.start; $("#sweep-end").value = sw.end;
@@ -1548,7 +1565,7 @@ $("#btn-update-apply").addEventListener("click", () => guarded(async () => {
 }, "#update-info"));
 
 // ---------------------------------------------------------------- remember view options (per browser)
-const REMEMBERED = ["toggle-grid", "toggle-focus", "toggle-histogram", "toggle-clipping", "stack-autoprocess"];
+const REMEMBERED = ["toggle-grid", "toggle-focus", "toggle-histogram", "toggle-clipping"];
 function store(key, value) { try { localStorage.setItem("ms." + key, JSON.stringify(value)); } catch (_) { /* private mode */ } }
 function recall(key) { try { const v = localStorage.getItem("ms." + key); return v === null ? undefined : JSON.parse(v); } catch (_) { return undefined; } }
 REMEMBERED.forEach((id) => $("#" + id).addEventListener("change", (e) => store(id, e.target.checked)));

@@ -17,10 +17,14 @@ were made with it):
   model at 25-35 cm. The 3D-printable parts to build it are on Thingiverse:
   [thing:7416432](https://www.thingiverse.com/thing:7416432).
 
-Also tested: a **USB webcam with a Sony IMX179** sensor — detected, preview and
-photos work well; image quality is limited by the camera itself.
+Also tested:
 
-Not yet tested on real hardware: Arducam 16 MP / 64 MP sensors, Raspberry Pi 4/5.
+- a **USB webcam with a Sony IMX179** sensor — detected, preview and photos work
+  well; image quality is limited by the camera itself;
+- the **Arducam 16 MP (IMX519)** autofocus camera — autofocus and the automatic
+  lens sweep work (the app adds the autofocus tuning libcamera lacks for it).
+
+Not yet tested on real hardware: Arducam 64 MP, Raspberry Pi 4/5.
 
 ![The booth: open front with the lit interior and the Pi at the back](booth/booth-open.jpg)
 
@@ -82,9 +86,7 @@ When the camera supports `AfMode`/`LensPosition`:
 
 - an **Autofocus** button (one AF cycle, then the lens is locked in manual);
 - the automatic **lens sweep** for focus stacking — see
-  [Focus stacking](focus-stacking.md);
-- stacks are always processed automatically (no Process button; only
-  "Reprocess" if a run failed).
+  [Focus stacking](focus-stacking.md).
 
 Manual-focus cameras such as the HQ Camera do not show the sweep; there you
 stack manually (Start stack → Space per frame → Finish).
@@ -92,15 +94,18 @@ stack manually (Start stack → Space per frame → Finish).
 ## Raspberry Pi 3B notes
 
 - **Memory:** 1 GB is tight for 12 MP work. The app limits focus-stack to 1
-  thread on a 1 GB Pi, pauses background compression while stacking and retries
-  an out-of-memory run with lighter settings. Halo-free stacking needs only
-  ~300 MB.
+  thread and compression to 1 worker on a 1 GB Pi, pauses compression while
+  stacking, and retries an out-of-memory run with lighter settings. Halo-free
+  stacking needs only ~300 MB. Keep **Stack processing** on **When idle** so
+  stacking happens while you are not shooting.
 - **Swap:** check it in the System tab. Bookworm: set `CONF_SWAPSIZE=2048` in
   `/etc/dphys-swapfile`, then `sudo systemctl restart dphys-swapfile`. Trixie
   configures swap differently (zram + swapfile via `rpi-swap`).
 - **PNG encoding of 12 MP takes 10-15 s** — that is why frames are written as
   raw TIFF first and compressed in the background (see [Speed](speed.md)).
-- **USB 2.0 only** (~35 MB/s, shared): a USB SSD beats a cheap stick.
+- **USB 2.0 only** (~35 MB/s, shared): a USB SSD or a fast USB 3 stick beats a
+  cheap stick (writing a 12 MP raw frame takes ~1.5-2 s at best, 5-10 s on a
+  slow stick).
 - A **Pi 4/5 with 4 GB** makes stacking several times faster and allows batch
   size 0 and full-resolution alignment. The Pi 5 needs a different camera cable
   (22-pin) and a 5 A supply.
