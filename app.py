@@ -391,6 +391,11 @@ class RealCamera:
         self.index = index
         self.af_tuning_added = str(AF_TUNING_DIR) in os.environ.get("LIBCAMERA_RPI_TUNING_FILE", "")
         self.picam2 = Picamera2(index)
+        # Every finished frame leaves its metadata here, so the UI can read the live
+        # values without holding camera_lock while waiting for a new frame (with a
+        # 0.5 s exposure that wait blocked slider changes for seconds).
+        self._last_md, self._last_md_at = {}, 0.0
+        self.picam2.post_callback = self._remember_metadata
         try:
             self._init_rest(stream)
         except Exception:
@@ -530,6 +535,18 @@ class RealCamera:
     def metadata(self):
         return self.picam2.capture_metadata()
 
+    def _remember_metadata(self, request):
+        try:
+            self._last_md, self._last_md_at = request.get_metadata(), time.time()
+        except Exception:
+            pass
+
+    def cached_metadata(self):
+        """Metadata of the latest frame without waiting, or None when there is none recently."""
+        md = self._last_md
+        frame_s = (md.get("FrameDuration") or 100_000) / 1e6
+        return dict(md) if md and time.time() - self._last_md_at < max(2.0, 3 * frame_s) else None
+
     # -- controls -----------------------------------------------------------
     def set_controls(self, controls):
         self.picam2.set_controls(controls)
@@ -591,6 +608,10 @@ class RealCamera:
         if preview_md:
             log.info("capture: preview %s -> photo %s (%d settle frames)",
                      exposure_summary(preview_md), exposure_summary(metadata), skipped)
+        limited = exposure_limited(self.applied, metadata)
+        if limited:
+            log.warning("capture: ExposureTime %d µs requested but the camera used %d µs (frame duration %s µs)",
+                        limited["requested"], limited["actual"], limited["frame_duration"])
         return image, metadata
 
     def capture_crop(self, x, y, cw, ch):
@@ -728,6 +749,18 @@ def apply_crop(image):
     Also makes saving, compressing and stacking faster — fewer pixels."""
     box = crop_box(image.size)
     return (image.crop(box), box) if box else (image, None)
+
+
+def exposure_limited(applied, md):
+    """Manual ExposureTime the camera did not deliver (clamped by the frame duration or
+    the sensor mode): {"requested", "actual", "frame_duration"} in µs, else None."""
+    cc = camera.camera_controls if camera is not None else {}
+    want, got = applied.get("ExposureTime"), md.get("ExposureTime")
+    if not want or not got or exposure_is_auto(applied, cc):
+        return None
+    if got >= 0.9 * want:
+        return None
+    return {"requested": int(want), "actual": int(got), "frame_duration": md.get("FrameDuration")}
 
 
 def exposure_summary(md):
@@ -2159,15 +2192,18 @@ LIVE_METADATA_KEYS = ("ExposureTime", "AnalogueGain", "DigitalGain", "ColourTemp
 @app.route("/api/controls", methods=["GET", "POST"])
 def api_controls():
     if request.method == "GET":
-        with camera_lock:
-            try:
-                metadata = camera.metadata()
-            except Exception as exc:
-                log.warning("capture_metadata failed: %s", exc)
-                metadata = {}
+        metadata = getattr(camera, "cached_metadata", lambda: None)()
+        if metadata is None:
+            with camera_lock:
+                try:
+                    metadata = camera.metadata()
+                except Exception as exc:
+                    log.warning("capture_metadata failed: %s", exc)
+                    metadata = {}
         current = {**metadata, **camera.applied}
         live = {k: jsonable(metadata[k]) for k in LIVE_METADATA_KEYS if k in metadata}
-        return jsonify(controls=describe_controls(camera.camera_controls, current), live=live)
+        return jsonify(controls=describe_controls(camera.camera_controls, current), live=live,
+                       exposure_limited=exposure_limited(camera.applied, metadata))
 
     body = request.get_json(force=True) or {}
     if body.get("reset"):

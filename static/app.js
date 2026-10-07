@@ -645,7 +645,7 @@ async function loadControls() {
   const r = await api("/api/controls");
   controlsDesc = r.controls;
   renderControls();
-  renderLive(r.live);
+  renderLive(r.live, r.exposure_limited);
 }
 function renderControls() {
   const pinned = pinnedControls();
@@ -654,10 +654,16 @@ function renderControls() {
   $("#controls").replaceChildren(...controlsDesc.filter((c) => !pinned.includes(c.name)).map(controlRow));
   applyFilter();
 }
-function renderLive(live) {
+function renderLive(live, limited) {
   $("#live").classList.remove("error");
   $("#live").textContent = Object.entries(live).map(([k, v]) =>
     `${k}: ${Array.isArray(v) ? v.map((x) => +(+x).toFixed(3)).join("/") : typeof v === "number" ? +v.toFixed(3) : v}`).join("  ·  ");
+  if (limited) {
+    $("#live").prepend(el("div", { class: "warn-text" },
+      `⚠ The camera uses ${(limited.actual / 1000).toFixed(1)} ms instead of the requested ${(limited.requested / 1000).toFixed(1)} ms exposure`
+      + (limited.frame_duration ? ` (frame time ${(limited.frame_duration / 1000).toFixed(1)} ms)` : "")
+      + " — please report this with the debug log."));
+  }
 }
 function applyFilter() {
   const q = $("#control-filter").value.toLowerCase();
@@ -675,7 +681,7 @@ $("#btn-af").addEventListener("click", () => guarded(async () => {
 }, "#live"));
 setInterval(async () => {
   if ($("#tab-controls").hidden || document.hidden) return;
-  try { renderLive((await api("/api/controls")).live); } catch (_) { /* ignore */ }
+  try { const r = await api("/api/controls"); renderLive(r.live, r.exposure_limited); } catch (_) { /* ignore */ }
 }, 2000);
 
 // ---------------------------------------------------------------- histogram & clipping (computed in the browser)
@@ -1310,12 +1316,17 @@ const SETTINGS_SECTIONS = [
 
 function showProcessingHint() {
   const mode = settings.processing?.mode || "idle";
+  $("#processing-mode").value = mode;
   $("#processing-hint").textContent = {
-    idle: `Finished stacks are processed once you stop shooting for ${settings.processing?.idle_minutes ?? 5} min (Settings → Stack processing).`,
-    immediate: "Finished stacks are processed right away (Settings → Stack processing).",
-    manual: "Finished stacks wait for Process in the Stacks tab (Settings → Stack processing).",
+    idle: `Stacks are merged once you stop shooting for ${settings.processing?.idle_minutes ?? 5} min — the Pi stays fast while you work. Start shooting again and the queue pauses.`,
+    immediate: "Each stack is merged right after Finish. You can keep shooting, but a slow Pi gets sluggish meanwhile.",
+    manual: "Stacks wait until you press Process or Process all in the Stacks tab.",
   }[mode] || "";
 }
+$("#processing-mode").addEventListener("change", (e) => guarded(async () => {
+  await api("/api/settings", "POST", { processing: { mode: e.target.value } });
+  await loadSettings();
+}));
 
 async function loadSettings() {
   const r = await api("/api/settings");

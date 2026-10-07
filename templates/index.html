@@ -86,6 +86,20 @@
 
     <!-- Capture -->
     <div class="tab" id="tab-capture">
+      <details class="howto">
+        <summary>How does this work?</summary>
+        <ul>
+          <li><strong>Photo</strong> takes one full-resolution picture (P key). It is saved in the background — you can keep shooting.</li>
+          <li><strong>Focus stack</strong>: several photos of the same model, each focused a bit deeper, merged into one sharp image.
+            <em>Manual</em>: press Start stack, set focus, press + Frame (Space) per depth, then Finish.
+            <em>Lens sweep</em> (autofocus cameras): set start and end, the camera does the rest.</li>
+          <li><strong>Stack processing</strong> decides when stacks are merged:
+            <em>When idle</em> waits until you have not shot anything for a few minutes, so the Pi stays fast while you work;
+            <em>Immediately</em> starts right after Finish; <em>Manually</em> waits for Process in the Stacks tab.</li>
+          <li>Tips: <strong>Focus check</strong> (next to the preview) shows a 100 % crop and a sharpness number — click the preview to choose the spot.
+            The header shows whether anything runs in the background (✓ idle / ⚙ busy) and how loaded the Pi is.</li>
+        </ul>
+      </details>
       <label class="block">Label <input id="label" placeholder="e.g. space_marine_sergeant"></label>
       <div class="muted small">File name example: <code id="name-example"></code></div>
 
@@ -104,7 +118,15 @@
         <button id="btn-stack-end" class="manual-only" disabled>Finish</button>
         <button id="btn-sweep-cancel" hidden>Cancel sweep</button>
       </div>
-      <div class="muted small" id="processing-hint"></div>
+      <div id="processing-box" class="card small">
+        <label class="inline">Stack processing
+          <select id="processing-mode">
+            <option value="idle">When idle</option>
+            <option value="immediate">Immediately</option>
+            <option value="manual">Manually</option>
+          </select></label>
+        <div class="muted" id="processing-hint"></div>
+      </div>
 
       <div id="sweep-box" hidden>
         <div class="grid2">
@@ -214,6 +236,15 @@
 
     <!-- Stacks -->
     <div class="tab" id="tab-stacks" hidden>
+      <details class="howto">
+        <summary>How does this work?</summary>
+        <ul>
+          <li>Every stack you shot is listed here. <strong>Process stack</strong> merges it now; <strong>Process all</strong> queues every stack that has no result yet. They run one at a time.</li>
+          <li>The result (<code>…_stacked.png</code>) opens with <em>result</em>; <strong>Download result</strong> saves it, <strong>Download zip</strong> also includes the frames.</li>
+          <li>With Settings → Stack processing on <em>When idle</em>, stacks are processed by themselves once you stop shooting for a while. ⏸ in the header shows how many are waiting.</li>
+          <li>The halo-free method is made for black backdrops; for other backdrops pick <code>focus-stack</code> under Stacking options.</li>
+        </ul>
+      </details>
       <div class="row">
         <button id="btn-stacks-refresh">Refresh</button>
         <button id="btn-stacks-process-all" class="primary" hidden>Process all unprocessed stacks</button>

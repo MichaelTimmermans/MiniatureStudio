@@ -56,3 +56,10 @@ old values.
   it off when not focusing. Long exposures slow any preview (1/5 s = 5 fps).
 - The capture log line (System → Log, filter `capture`) shows preview vs photo
   exposure and gain — the quickest way to see why a photo differs.
+- If the camera uses a shorter exposure than the `ExposureTime` you set, the
+  Camera tab shows a warning with both values and the log gets a line
+  "ExposureTime … requested but the camera used …". Please report that with the
+  debug log.
+- With long exposures (0.3 s and more) the preview updates only a few times per
+  second and a change takes a couple of frames to show — that is the camera, not
+  the app hanging.

@@ -29,7 +29,8 @@ all frames match.
 
 ## Processing
 
-**Settings → Stack processing** decides when finished stacks are stacked:
+**Stack processing** — on the Capture tab under the stack buttons, or in
+Settings — decides when finished stacks are stacked:
 
 - **When idle** (default): nothing heavy runs while you shoot. Once you have not
   captured anything, stacked or used the focus check for the idle time (5 min by
