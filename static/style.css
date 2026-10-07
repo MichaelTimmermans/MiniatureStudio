@@ -210,3 +210,8 @@ fieldset.flash { border-color: var(--warn); box-shadow: 0 0 0 2px var(--warn); t
 #preview-wrap #focus-check .small { font-size: 11px; line-height: 1.2; padding: 0 2px; }
 .badge.busy { border-color: var(--accent); color: var(--accent); }
 button.badge { cursor: pointer; font-family: inherit; font-size: 12px; padding: 2px 8px; line-height: inherit; }
+
+#update-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 16px;
+  background: rgba(79, 156, 245, .15); border-bottom: 1px solid var(--accent); }
+#update-banner[hidden] { display: none; }
+#update-banner-text { flex: 1 1 auto; }

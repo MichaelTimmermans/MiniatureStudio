@@ -3690,12 +3690,42 @@ def api_version():
         return jsonify(ok=True, version="unknown", error=str(exc))
 
 
-@app.route("/api/update/check", methods=["POST"])
-def api_update_check():
+update_state = {"behind": 0, "changes": [], "remote": None, "checked": None, "error": None}
+
+
+def check_for_update():
     git("fetch", "--quiet", "--tags", "origin", timeout=60)
     behind = int(git("rev-list", "--count", "HEAD..@{u}"))
     changes = git("log", "--format=%h %s", "HEAD..@{u}").splitlines() if behind else []
-    return jsonify(ok=True, behind=behind, changes=changes[:50],
+    update_state.update(behind=behind, changes=changes[:50], remote=git("rev-parse", "@{u}"),
+                        checked=time.time(), error=None)
+    return update_state
+
+
+def update_checker():
+    """Check for updates shortly after start (network up) and then every 6 hours,
+    so the page can show a banner. Failures (offline) are just remembered."""
+    time.sleep(30)
+    while True:
+        try:
+            check_for_update()
+            if update_state["behind"]:
+                log.info("Update available: %d new change(s)", update_state["behind"])
+        except Exception as exc:
+            update_state.update(checked=time.time(), error=str(exc))
+            log.info("Update check failed: %s", exc)
+        time.sleep(6 * 3600)
+
+
+@app.route("/api/update/status")
+def api_update_status():
+    return jsonify(ok=True, **update_state)
+
+
+@app.route("/api/update/check", methods=["POST"])
+def api_update_check():
+    state = check_for_update()
+    return jsonify(ok=True, behind=state["behind"], changes=state["changes"],
                    version=git("describe", "--tags", "--always", "--dirty"))
 
 
@@ -3763,6 +3793,8 @@ def main():
     upload_queue = queue.Queue()
     threading.Thread(target=_upload_worker, daemon=True, name="upload-queue").start()
     threading.Thread(target=space_watchdog, daemon=True, name="space-watchdog").start()
+    if os.name != "nt":  # the Pi; a dev checkout on Windows needs no banner
+        threading.Thread(target=update_checker, daemon=True, name="update-checker").start()
     save_queue = SaveQueue(int(CONFIG["camera"].get("save_queue", 2)))
     compressor = Compressor(BASE_DIR / ".compress_queue.json", int(CONFIG["camera"].get("compress_workers", 0)))
     prepare_af_tuning()

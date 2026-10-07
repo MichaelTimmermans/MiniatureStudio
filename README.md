@@ -96,8 +96,9 @@ Then open `http://<hostname>.local:8000`.
 
 ## Updating
 
-- In the web app: **Settings → Check for updates → Install update**. The app
-  restarts by itself.
+- In the web app: the app checks for updates when it starts (and every 6 hours)
+  and shows a banner at the top of the page — **Show & install**. Or any time:
+  **Settings → Check for updates → Install update**. The app restarts by itself.
 - Or in a terminal: `miniaturestudio-update` (`--check` to only look).
 
 Updates follow the `main` branch via `git pull`. New system packages, a new

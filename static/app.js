@@ -1497,6 +1497,28 @@ $("#btn-nas-unmount").addEventListener("click", () => guarded(async () => {
 async function loadVersion() {
   try { $("#version").textContent = (await api("/api/version")).version; } catch (_) { /* ignore */ }
 }
+// Banner when the app's own background check found a newer version. "Later" hides it
+// until there is a newer update than the one dismissed.
+let bannerRemote = null;
+async function checkUpdateBanner() {
+  try {
+    const r = await api("/api/update/status");
+    bannerRemote = r.remote;
+    const show = r.behind > 0 && recall("updateDismissed") !== r.remote;
+    $("#update-banner").hidden = !show;
+    if (show) $("#update-banner-text").textContent =
+      `A new version of MiniatureStudio is available (${r.behind} change${r.behind === 1 ? "" : "s"}).`;
+  } catch (_) { /* ignore */ }
+}
+$("#btn-banner-later").addEventListener("click", () => {
+  store("updateDismissed", bannerRemote);
+  $("#update-banner").hidden = true;
+});
+$("#btn-banner-update").addEventListener("click", () => {
+  document.querySelector('#tabs button[data-tab="settings"]').click();
+  $("#btn-update-check").scrollIntoView({ behavior: "smooth", block: "center" });
+  $("#btn-update-check").click();  // lists the changes and shows the Install button
+});
 $("#btn-update-check").addEventListener("click", () => guarded(async () => {
   $("#update-info").textContent = "Checking…";
   const r = await api("/api/update/check", "POST", {});
@@ -1571,6 +1593,8 @@ function restoreView() {
   loadCrop();
   restoreView();
   loadVersion();
+  checkUpdateBanner();
+  setInterval(checkUpdateBanner, 10 * 60 * 1000);
   refreshStatus();
   setInterval(refreshStatus, 1500);
   setInterval(pollLens, 2000);

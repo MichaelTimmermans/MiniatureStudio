@@ -7,6 +7,11 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=asset_v) }}">
 </head>
 <body>
+<div id="update-banner" hidden>
+  <span id="update-banner-text"></span>
+  <button id="btn-banner-update" type="button" class="primary">Show &amp; install</button>
+  <button id="btn-banner-later" type="button" title="Hide until the next update">Later</button>
+</div>
 <header>
   <h1>MiniatureStudio</h1>
   <div id="badges"></div>
