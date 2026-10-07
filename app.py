@@ -458,8 +458,9 @@ class RealCamera:
 
     def _with_controls(self, cfg):
         # Controls in the config apply from the very first frame after start().
-        cfg["controls"] = {**(cfg.get("controls") or {}),
-                           **effective_controls(self.applied, self.picam2.camera_controls)}
+        cc = self.picam2.camera_controls
+        cfg["controls"] = {**(cfg.get("controls") or {}), **effective_controls(self.applied, cc),
+                           **frame_limits_for(self.applied, cc)}
         return cfg
 
     def _still_config(self, with_lores=True):
@@ -489,10 +490,12 @@ class RealCamera:
         cfg["controls"]["FrameDurationLimits"] = (100, 1_000_000)
         return self._with_controls(cfg)
 
-    def _apply_saved_controls(self):
+    def _apply_saved_controls(self, frame_limits=True):
         if self.applied:
+            cc = self.picam2.camera_controls
             try:
-                self.picam2.set_controls(effective_controls(self.applied, self.picam2.camera_controls))
+                self.picam2.set_controls({**effective_controls(self.applied, cc),
+                                          **(frame_limits_for(self.applied, cc) if frame_limits else {})})
             except Exception as exc:  # e.g. a control invalid in video mode
                 log.warning("Could not re-apply controls: %s", exc)
 
@@ -549,7 +552,10 @@ class RealCamera:
 
     # -- controls -----------------------------------------------------------
     def set_controls(self, controls):
-        self.picam2.set_controls(controls)
+        extra = {}
+        if self.mode != "video" and {"ExposureTime", "ExposureTimeMode", "AeEnable"} & set(controls):
+            extra = frame_limits_for({**self.applied, **controls}, self.picam2.camera_controls)
+        self.picam2.set_controls({**controls, **extra})  # the frame limit is not stored with the controls
         self.applied.update(controls)
 
     def reset_controls(self):
@@ -669,7 +675,7 @@ class RealCamera:
         self.picam2.start_encoder(self._make_preview_encoder(vid["preview_size"]), self._FileOutput(self.stream),
                                   name="lores")
         self.picam2.start()
-        self._apply_saved_controls()
+        self._apply_saved_controls(frame_limits=False)  # video keeps its fixed frame rate
         self.mode = "video"
         return path
 
@@ -715,6 +721,17 @@ def effective_controls(controls, cc):
     return out
 
 
+def frame_limits_for(controls, cc):
+    """libcamera never exposes longer than the allowed frame time. A stale or default
+    limit (picamera2's preview preset is 1/12 s) cut a 549 ms exposure to 85 ms, so with
+    a manual ExposureTime always send a frame time that fits it."""
+    exposure = controls.get("ExposureTime")
+    if "FrameDurationLimits" not in cc or not exposure or exposure_is_auto(controls, cc):
+        return {}
+    exposure = int(exposure)
+    return {"FrameDurationLimits": (100, max(1_000_000, exposure + exposure // 5 + 20_000))}
+
+
 def ae_converged(md):
     """libcamera's own verdict when available (AeState 2 = converged, or AeLocked)."""
     if "AeState" in md:
@@ -749,6 +766,38 @@ def apply_crop(image):
     Also makes saving, compressing and stacking faster — fewer pixels."""
     box = crop_box(image.size)
     return (image.crop(box), box) if box else (image, None)
+
+
+def exposure_report(image, metadata=None):
+    """How well a frame is exposed, judged on the model (a black backdrop makes averages
+    useless): the brightest highlights should sit just under clipping. Returns verdict,
+    highlight level (0-1), clipped %, and the exposure factor that would fix it."""
+    import numpy as np
+
+    small = image.reduce(4) if min(image.size) > 1200 else image
+    lum = np.asarray(small.convert("RGB")).max(axis=2)
+    subject = lum[lum > 24]  # ignore the black backdrop
+    if subject.size < lum.size * 0.002:
+        return {"verdict": "dark", "highlight": float(lum.max()) / 255, "clipped_pct": 0.0, "factor": 4.0,
+                "text": "Almost everything is black — far too dark, or no model in view."}
+    high = float(np.percentile(subject, 99.5))
+    clipped = float((lum >= 250).sum()) * 100 / lum.size
+    target = 230.0
+    if clipped > 0.3:
+        verdict, factor = "bright", 0.7
+        text = f"{clipped:.1f}% of the picture is blown out — lower the exposure."
+    elif high < 165:
+        verdict, factor = "dark", min(16.0, (target / max(high, 8)) ** 2.2)  # pixel values are gamma-encoded
+        text = f"The brightest parts of the model reach only {high / 2.55:.0f}% — the photo will look dark."
+    else:
+        verdict, factor = "ok", 1.0
+        text = f"Good: highlights at {high / 2.55:.0f}%, nothing blown out."
+    report = {"verdict": verdict, "highlight": round(high / 255, 3), "clipped_pct": round(clipped, 2),
+              "factor": round(factor, 2), "text": text}
+    if metadata and metadata.get("ExposureTime") and verdict != "ok":
+        report["exposure_us"] = int(metadata["ExposureTime"])
+        report["suggested_us"] = int(min(metadata["ExposureTime"] * factor, 10_000_000))
+    return report
 
 
 def exposure_limited(applied, md):
@@ -1635,6 +1684,9 @@ def stack_outputs(stack_dir, name):
     for f in stack_dir.glob(f"{name}_stacked.*"):
         if f.suffix.lower() in IMAGE_EXTS:
             found["result"] = f.name
+    edited = stack_dir / f"{name}_stacked_edited.png"
+    if edited.exists():
+        found["edited"] = edited.name
     for key in ("depthmap", "3dview"):
         f = stack_dir / f"{name}_{key}.png"
         if f.exists():
@@ -2653,10 +2705,71 @@ def api_capture():
     grabbed = time.time() - started
     image, box = apply_crop(image)
     # Encoding + upload run in the background; auto-upload starts once the file exists.
+    exposure = exposure_report(image, metadata)
     save_queue.put(image, path, metadata, {"label": label, "crop": box}, upload=("photo", path.name))
     log.info("photo %s: grab %.1fs, queued after %.1fs", path.name, grabbed, time.time() - started)
-    return jsonify(ok=True, file=path.name, seconds=round(grabbed, 2), saving=True,
+    return jsonify(ok=True, file=path.name, seconds=round(grabbed, 2), saving=True, exposure=exposure,
                    uploads=["queued"] if auto_upload_dests() else [])
+
+
+def brightness_lut(ev):
+    """Exposure change of `ev` stops on gamma-encoded pixels (approx. sRGB 2.2): the
+    same curve the browser preview uses, so the saved file matches what you saw."""
+    gain = 2.0 ** ev
+    return [min(255, round(255 * min(1.0, (v / 255) ** 2.2 * gain) ** (1 / 2.2))) for v in range(256)]
+
+
+def run_brightness_edit(job, src, out, ev):
+    from PIL import Image
+
+    started = time.time()
+    with Image.open(src) as img:
+        img = img.convert("RGB")
+        lut = brightness_lut(ev)
+        edited = img.point(lut * 3)
+    save_image(edited, out)
+    job_log(job, f"{out.name}: brightness {ev:+.1f} EV in {time.time() - started:.0f}s")
+    return {"output": out.name}
+
+
+@app.route("/api/edit/brightness", methods=["POST"])
+def api_edit_brightness():
+    """Save a brightened (or darkened) copy of a photo or stack result; the original stays."""
+    body = request.get_json(force=True) or {}
+    kind, relpath = body.get("kind"), body.get("path") or ""
+    if kind not in ("photos", "stacks"):
+        return jsonify(ok=False, error="unknown kind"), 400
+    try:
+        ev = max(-2.0, min(3.0, float(body.get("ev", 0))))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error="invalid ev"), 400
+    src = safe_child(data_dir(kind), relpath)
+    if not src.is_file() or src.suffix.lower() not in IMAGE_EXTS:
+        abort(404)
+    stem = src.stem[:-len("_edited")] if src.stem.endswith("_edited") else src.stem
+    if stem.endswith("_stacked") and src.suffix.lower() in (".tif", ".tiff") and src.with_suffix(".png").exists():
+        src = src.with_suffix(".png")
+    out = src.with_name(f"{stem}_edited.png")
+    if src == out:  # editing the edited copy again: start from the original
+        originals = [p for p in src.parent.glob(f"{stem}.*") if p.suffix.lower() in IMAGE_EXTS]
+        if originals:
+            src = originals[0]
+    job = start_job("edit", out.name, run_brightness_edit, src, out, ev)
+    return jsonify(ok=True, job=job["id"], output=out.name)
+
+
+@app.route("/api/exposure_check", methods=["POST"])
+def api_exposure_check():
+    """Take a full-resolution frame (not saved) and judge its exposure before shooting."""
+    if recording["active"]:
+        return jsonify(ok=False, error="recording in progress"), 409
+    note_activity()
+    with camera_lock:
+        image, metadata = camera.grab()
+    image, _ = apply_crop(image)
+    report = exposure_report(image, metadata)
+    limited = exposure_limited(camera.applied, metadata)
+    return jsonify(ok=True, gain=metadata.get("AnalogueGain"), limited=limited, **report)
 
 
 @app.route("/api/video/start", methods=["POST"])
@@ -2770,8 +2883,10 @@ def api_stack_frame():
         raise
     grabbed = time.time() - started
     image, box = apply_crop(image)
+    exposure = exposure_report(image, metadata) if n == 1 else None
     save_queue.put(image, path, metadata, {"stack": name, "frame": n, "crop": box}, compress=False)
-    return jsonify(ok=True, name=name, frame=n, file=path.name, seconds=round(grabbed, 2), saving=True)
+    return jsonify(ok=True, name=name, frame=n, file=path.name, seconds=round(grabbed, 2), saving=True,
+                   exposure=exposure)
 
 
 @app.route("/api/stack/end", methods=["POST"])

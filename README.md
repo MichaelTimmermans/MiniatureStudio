@@ -60,6 +60,7 @@ painted with Black 3.0. The 3D-printable parts are on Thingiverse:
 - Every camera control in the browser, with presets that load at boot
 - Photos, video, and **focus stacking** — manual, or an automatic lens sweep on
   autofocus cameras — with a halo-free method made for black backdrops
+- Exposure check before shooting, and a brightness correction for finished images
 - Crop to a tall or wide frame before shooting
 - Fast captures: saving, compressing, stacking and uploading run in the
   background — by default stacking waits until you pause shooting

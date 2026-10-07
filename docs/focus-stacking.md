@@ -55,6 +55,15 @@ and each stack card its queue position.
 - The stacking options are in **Settings → Stacking default options** and can be
   overridden per run in the Stacks tab.
 
+## Small corrections afterwards
+
+Open a result (or a photo) in the viewer and use the **Brightness** slider
+(−2 … +3 EV) to see the change right away; **Save brightened copy** writes
+`…_edited.png` next to the original, which stays untouched (the stack card gets
+an *edited* link). Brightening afterwards also lifts the noise in the shadows,
+so getting the exposure right in the camera (☀ Check exposure) is better — this
+is for small corrections.
+
 ## Halo-free stacking (default method)
 
 Classic focus stackers (focus-stack's wavelet method) pick the frame with the

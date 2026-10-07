@@ -32,6 +32,16 @@ explanation. On phones, − and + buttons next to each slider allow fine steps.
   settings — a quick way to get a consistent look. During a stack this happens
   automatically (Settings → Camera & performance).
 
+## Check the exposure before shooting
+
+**☀ Check exposure** (Capture tab, next to Photo) takes one full-resolution test
+frame — not saved — and judges it on the model itself (the black backdrop is
+ignored): the brightest parts of the model should sit just under clipping. It
+says *OK*, *too dark* or *too bright* and, with a manual exposure, suggests an
+ExposureTime with an **Apply** button. It uses a real photo frame, so the fast
+preview's extra sensitivity does not fool it. Photos and the first frame of a
+stack are checked the same way and warn when they look off.
+
 ## Presets
 
 Save the current settings as a **preset** (per camera model) and mark one as
