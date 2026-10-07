@@ -111,6 +111,34 @@ def data_dir(key):
     return path
 
 
+class StorageFull(RuntimeError):
+    """The capture disk reached its fill limit; processing still has room."""
+
+
+_usage_cache = {"at": 0.0, "pct": None}
+
+
+def storage_used_pct():
+    """How full the disk with the captures is, in % (cached a few seconds)."""
+    if time.time() - _usage_cache["at"] > 5:
+        usage = shutil.disk_usage(data_dir("photos"))
+        _usage_cache.update(at=time.time(), pct=round(100 * (usage.total - usage.free) / usage.total, 1))
+    return _usage_cache["pct"]
+
+
+def storage_limit_pct():
+    return float(CONFIG.get("storage", {}).get("max_used_pct", 80))
+
+
+def check_space():
+    """New captures stop at the limit (default 80 %), so stacking, compressing and
+    moving always have room and the disk never fills up completely."""
+    pct, limit = storage_used_pct(), storage_limit_pct()
+    if pct >= limit:
+        raise StorageFull(f"Disk {pct:.0f}% full — capturing is paused at {limit:.0f}% so stacking and "
+                          "compressing always have room. Delete, move or upload photos and stacks to continue.")
+
+
 # --------------------------------------------------------------------------
 # File naming
 # --------------------------------------------------------------------------
@@ -1916,6 +1944,11 @@ def run_sweep(job, name, positions, settle_ms, process):
             if job.get("cancel"):
                 job_log(job, "Cancelled")
                 break
+            try:
+                check_space()
+            except StorageFull as exc:
+                job_log(job, f"Stopped early: {exc}")  # the frames so far are still stacked
+                break
             focus_hold["last"] = time.time()
             with camera_lock:
                 camera.set_controls({"LensPosition": float(pos)})
@@ -2370,10 +2403,18 @@ def api_status():
                    saving=save_queue.status(), compressing=compressor.status(),
                    storage={"target": storage_target(),
                             "available": storage_target() != "usb" or os.path.ismount(USB_MOUNT),
-                            "label": CONFIG.get("storage", {}).get("label")},
+                            "label": CONFIG.get("storage", {}).get("label"),
+                            "used_pct": safe_used_pct(), "limit_pct": storage_limit_pct()},
                    preview_mode=getattr(camera, "mode", None),
                    preview_stalled_s=camera.stream.seconds_without_frames(),
                    background=background_summary(), load=load_summary())
+
+
+def safe_used_pct():
+    try:
+        return storage_used_pct()
+    except Exception:
+        return None
 
 
 def background_summary():
@@ -2491,6 +2532,7 @@ def focus_hold_watchdog():
 def api_capture():
     if recording["active"]:
         return jsonify(ok=False, error="recording in progress"), 409
+    check_space()
     last_capture["t"] = time.time()
     label = (request.get_json(silent=True) or {}).get("label", "")
     directory, ext = data_dir("photos"), image_ext()
@@ -2516,6 +2558,7 @@ def api_video_start():
             return jsonify(ok=False, error="already recording"), 409
         if active_stack:
             return jsonify(ok=False, error="finish the stack first"), 409
+        check_space()
         recording["active"] = True
     directory = data_dir("videos")
     stem = unique_stem(directory, build_basename(label), ".mp4")
@@ -2539,13 +2582,33 @@ def api_video_start():
 def api_video_stop():
     if not recording["active"]:
         return jsonify(ok=False, error="not recording"), 409
+    path, duration, uploads = stop_recording()
+    return jsonify(ok=True, file=path.name if path else None, seconds=round(duration, 1), uploads=uploads)
+
+
+def stop_recording():
     with camera_lock:
         camera.stop_video()
     path = Path(recording["path"]) if recording["path"] else None
     duration = time.time() - (recording["started"] or time.time())
     recording.update(active=False, path=None, started=None)
     uploads = auto_upload("video", path.name) if path and path.exists() and not camera.demo else []
-    return jsonify(ok=True, file=path.name if path else None, seconds=round(duration, 1), uploads=uploads)
+    return path, duration, uploads
+
+
+def space_watchdog():
+    """A running video is the one capture that keeps growing: stop it 10 points past the limit."""
+    while True:
+        time.sleep(10)
+        if not recording["active"]:
+            continue
+        try:
+            pct = storage_used_pct()
+            if pct >= min(storage_limit_pct() + 10, 97):
+                log.warning("Disk %.0f%% full — stopping the video", pct)
+                stop_recording()
+        except Exception:
+            log.exception("Disk space check during recording failed")
 
 
 # --------------------------------------------------------------------------
@@ -2561,6 +2624,7 @@ def api_stack_start():
             return jsonify(ok=False, error=f"stack {active_stack['name']} still open"), 409
         if recording["active"]:
             return jsonify(ok=False, error="recording in progress"), 409
+        check_space()
         base = data_dir("stacks")
         name = unique_stem(base, build_basename(label), "")
         stack_dir = base / name
@@ -2579,6 +2643,7 @@ def api_stack_frame():
             return jsonify(ok=False, error="no stack open"), 409
         if active_stack.get("sweep"):
             return jsonify(ok=False, error="a lens sweep is running"), 409
+        check_space()
         active_stack["count"] += 1
         n, name, stack_dir = active_stack["count"], active_stack["name"], Path(active_stack["dir"])
     path = stack_dir / f"{name}_{n}{image_ext()}"
@@ -2641,6 +2706,7 @@ def api_stack_sweep():
         return jsonify(ok=False, error=f"invalid sweep settings: {exc}"), 400
     if not (lo <= start <= hi and lo <= end <= hi) or not 2 <= steps <= 200:
         return jsonify(ok=False, error=f"LensPosition must be within {lo}..{hi}, steps 2..200"), 400
+    check_space()
     label = body.get("label", "")
     with state_lock:
         if active_stack:
@@ -3668,6 +3734,8 @@ def handle_error(exc):
         return exc
     if isinstance(exc, StorageUnavailable):
         return jsonify(ok=False, error=str(exc), storage_unavailable=True), 503
+    if isinstance(exc, StorageFull):
+        return jsonify(ok=False, error=str(exc), storage_full=True), 507
     log.exception("Unhandled error")
     return jsonify(ok=False, error=str(exc)), 500
 
@@ -3694,6 +3762,7 @@ def main():
     threading.Thread(target=_stack_worker, daemon=True, name="focus-stack-queue").start()
     upload_queue = queue.Queue()
     threading.Thread(target=_upload_worker, daemon=True, name="upload-queue").start()
+    threading.Thread(target=space_watchdog, daemon=True, name="space-watchdog").start()
     save_queue = SaveQueue(int(CONFIG["camera"].get("save_queue", 2)))
     compressor = Compressor(BASE_DIR / ".compress_queue.json", int(CONFIG["camera"].get("compress_workers", 0)))
     prepare_af_tuning()

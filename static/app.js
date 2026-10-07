@@ -94,6 +94,12 @@ function renderBadges() {
         + (ld.temp_c != null ? ` · ${Math.round(ld.temp_c)}°C` : "")));
   }
   const st = status.storage;
+  if (st?.used_pct != null && st.used_pct >= st.limit_pct) {
+    b.append(el("span", { class: "badge rec", title: "Stacking and compressing continue. Delete, move or upload photos and stacks to capture again." },
+      `⛔ disk ${Math.round(st.used_pct)}% full — capturing paused`));
+  } else if (st?.used_pct != null && st.used_pct >= st.limit_pct - 10) {
+    b.append(el("span", { class: "badge warn", title: `Capturing pauses at ${st.limit_pct}%` }, `disk ${Math.round(st.used_pct)}% full`));
+  }
   if (st?.target === "usb") {
     b.append(st.available
       ? el("span", { class: "badge ok", title: "Captures are saved to the USB disk" }, `USB ${st.label || "disk"}`)
@@ -117,6 +123,13 @@ async function refreshStatus() {
   $("#btn-sweep-cancel").hidden = !(stack && stack.sweep);
   $("#btn-photo").disabled = status.recording.active;
   if (isBusy()) CAPTURE_BUTTONS.forEach((s) => { $(s).disabled = true; });  // a capture is running
+  // Disk at its fill limit: no new captures (Finish and processing still work).
+  const st = status.storage || {};
+  const full = st.used_pct != null && st.used_pct >= st.limit_pct;
+  ["#btn-photo", "#btn-stack-start", "#btn-stack-frame", "#btn-video"].forEach((s) => {
+    if (full && !(s === "#btn-video" && status.recording.active)) $(s).disabled = true;
+    $(s).title = full ? `Disk ${Math.round(st.used_pct)}% full — capturing is paused at ${st.limit_pct}%` : "";
+  });
   if (stack?.sweep) showBusy(`Lens sweep: frame ${stack.count}/${stack.total}…`, "sweep");
   else hideBusy("sweep");
   $("#stack-status").textContent = stack

@@ -27,6 +27,16 @@ If the selected disk is missing, capturing stops with a clear message instead
 of silently writing to the SD card. Use **Safely remove USB disk** before
 unplugging. A USB SSD is the fastest and most durable option.
 
+## Disk space limit
+
+New captures (photos, stacks, sweeps, videos) stop when the capture disk is
+**80 % full**, so stacking, compressing and moving always have room and the disk
+never fills up completely. The header turns orange from 70 % and shows
+**⛔ disk full — capturing paused** at the limit; an open stack can still be
+finished and processed, a running sweep stops and stacks the frames it has, and a
+running video stops at 90 %. Delete, move or upload photos and stacks to continue.
+The limit is `storage.max_used_pct` in `config.json`.
+
 ## Upload
 
 - **Google Drive**: **Settings → Connect Google Drive**. Sign in with Google in
