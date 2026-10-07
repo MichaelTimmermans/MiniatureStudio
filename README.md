@@ -140,7 +140,7 @@ compression workers with the RAM it finds.
 | **Disk** | USB 2 only (~35 MB/s max) | USB 3 | USB 3 SSD or fast stick |
 | **Stack 8 frames (halo-free)** | 132-176 s *(measured)* | ~60-90 s *(expected)* | ~60-90 s *(expected)* |
 | **PNG compression, per 12 MP frame** | 10-15 s *(measured)* | ~5-7 s *(expected)* | ~5-7 s, 2-3 at a time *(expected)* |
-| **Writing one raw frame** | 5-10 s on a cheap stick *(measured)*, ~1.5-2 s at best | well under 1 s | well under 1 s |
+| **Writing one raw frame** | 5-10 s on a cheap stick *(observed)*, ~1.5-2 s at best | well under 1 s | well under 1 s |
 | **Working while it processes** | slows down noticeably; one job at a time | fine | smooth |
 
 A **Pi 5 (4 GB)** is faster still (stacking roughly twice a Pi 4) and can use an
