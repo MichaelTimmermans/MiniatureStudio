@@ -224,9 +224,5 @@ details.howto li { margin-bottom: 4px; }
 #processing-box label.inline { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .warn-text { color: var(--warn); margin-bottom: 4px; }
 
-#viewer-edit { padding: 6px 8px; align-items: center; gap: 8px; flex-wrap: wrap; }
-#viewer-edit label.inline { display: flex; align-items: center; gap: 6px; }
-#edit-ev { width: 220px; }
-.viewer-canvas { max-width: 100%; max-height: 80vh; display: block; margin: 0 auto; }
 .ok-text { color: var(--ok); }
 #exposure-result button { margin-top: 4px; }

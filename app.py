@@ -1684,9 +1684,6 @@ def stack_outputs(stack_dir, name):
     for f in stack_dir.glob(f"{name}_stacked.*"):
         if f.suffix.lower() in IMAGE_EXTS:
             found["result"] = f.name
-    edited = stack_dir / f"{name}_stacked_edited.png"
-    if edited.exists():
-        found["edited"] = edited.name
     for key in ("depthmap", "3dview"):
         f = stack_dir / f"{name}_{key}.png"
         if f.exists():
@@ -2710,52 +2707,6 @@ def api_capture():
     log.info("photo %s: grab %.1fs, queued after %.1fs", path.name, grabbed, time.time() - started)
     return jsonify(ok=True, file=path.name, seconds=round(grabbed, 2), saving=True, exposure=exposure,
                    uploads=["queued"] if auto_upload_dests() else [])
-
-
-def brightness_lut(ev):
-    """Exposure change of `ev` stops on gamma-encoded pixels (approx. sRGB 2.2): the
-    same curve the browser preview uses, so the saved file matches what you saw."""
-    gain = 2.0 ** ev
-    return [min(255, round(255 * min(1.0, (v / 255) ** 2.2 * gain) ** (1 / 2.2))) for v in range(256)]
-
-
-def run_brightness_edit(job, src, out, ev):
-    from PIL import Image
-
-    started = time.time()
-    with Image.open(src) as img:
-        img = img.convert("RGB")
-        lut = brightness_lut(ev)
-        edited = img.point(lut * 3)
-    save_image(edited, out)
-    job_log(job, f"{out.name}: brightness {ev:+.1f} EV in {time.time() - started:.0f}s")
-    return {"output": out.name}
-
-
-@app.route("/api/edit/brightness", methods=["POST"])
-def api_edit_brightness():
-    """Save a brightened (or darkened) copy of a photo or stack result; the original stays."""
-    body = request.get_json(force=True) or {}
-    kind, relpath = body.get("kind"), body.get("path") or ""
-    if kind not in ("photos", "stacks"):
-        return jsonify(ok=False, error="unknown kind"), 400
-    try:
-        ev = max(-2.0, min(3.0, float(body.get("ev", 0))))
-    except (TypeError, ValueError):
-        return jsonify(ok=False, error="invalid ev"), 400
-    src = safe_child(data_dir(kind), relpath)
-    if not src.is_file() or src.suffix.lower() not in IMAGE_EXTS:
-        abort(404)
-    stem = src.stem[:-len("_edited")] if src.stem.endswith("_edited") else src.stem
-    if stem.endswith("_stacked") and src.suffix.lower() in (".tif", ".tiff") and src.with_suffix(".png").exists():
-        src = src.with_suffix(".png")
-    out = src.with_name(f"{stem}_edited.png")
-    if src == out:  # editing the edited copy again: start from the original
-        originals = [p for p in src.parent.glob(f"{stem}.*") if p.suffix.lower() in IMAGE_EXTS]
-        if originals:
-            src = originals[0]
-    job = start_job("edit", out.name, run_brightness_edit, src, out, ev)
-    return jsonify(ok=True, job=job["id"], output=out.name)
 
 
 @app.route("/api/exposure_check", methods=["POST"])

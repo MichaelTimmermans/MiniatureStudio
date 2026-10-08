@@ -411,13 +411,6 @@
     </span>
   </div>
   <div id="viewer-body"></div>
-  <div id="viewer-edit" class="row small" hidden>
-    <label class="inline">Brightness <input type="range" id="edit-ev" min="-2" max="3" step="0.1" value="0">
-      <span id="edit-ev-value">±0.0 EV</span></label>
-    <button id="btn-edit-reset" type="button">Reset</button>
-    <button id="btn-edit-save" type="button" class="primary" disabled>Save brightened copy</button>
-    <span class="muted">The original stays; the copy is saved as …_edited.png.</span>
-  </div>
 </dialog>
 
 <script src="{{ url_for('static', filename='help.js', v=asset_v) }}"></script>

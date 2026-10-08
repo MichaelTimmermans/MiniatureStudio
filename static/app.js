@@ -981,15 +981,8 @@ function loadCrop() {
 
 // ---------------------------------------------------------------- viewer
 const isTiff = (name) => /\.tiff?$/i.test(name);
-let viewerSrc = null;  // {kind, path, img} of the image in the viewer, for the brightness edit
 function openViewer(title, url, isVideo = false) {
   $("#viewer-title").textContent = title;
-  const m = !isVideo && url.match(/^\/media\/(photos|stacks)\/(.+)$/);
-  viewerSrc = m ? { kind: m[1], path: decodeURIComponent(m[2]) } : null;
-  $("#viewer-edit").hidden = !viewerSrc;
-  $("#edit-ev").value = 0;
-  $("#edit-ev-value").textContent = "±0.0 EV";
-  $("#btn-edit-save").disabled = true;
   $("#viewer-download").href = url + (url.includes("?") ? "&" : "?") + "download=1";
   $("#viewer-download-png").hidden = !isTiff(title);
   $("#viewer-download-png").href = url + "?as=png";
@@ -1002,58 +995,6 @@ function openViewer(title, url, isVideo = false) {
 }
 $("#viewer-close").addEventListener("click", () => { $("#viewer").close(); $("#viewer-body").replaceChildren(); });
 
-// Brightness preview: the same curve the Pi applies when saving (exposure in stops on
-// gamma-encoded pixels), drawn on a canvas over a screen-sized copy of the image.
-function brightnessLut(ev) {
-  const gain = 2 ** ev, lut = new Uint8ClampedArray(256);
-  for (let v = 0; v < 256; v++) lut[v] = Math.round(255 * Math.min(1, (v / 255) ** 2.2 * gain) ** (1 / 2.2));
-  return lut;
-}
-let editBase = null, editTimer = null;
-async function previewBrightness(ev) {
-  const img = $("#viewer-body img");
-  if (!img) return;
-  if (!editBase) {
-    const src = new Image();
-    src.src = `/thumb/${viewerSrc.kind}/${viewerSrc.path.split("/").map(encodeURIComponent).join("/")}?size=large`;
-    await src.decode();
-    const c = Object.assign(document.createElement("canvas"), { width: src.naturalWidth, height: src.naturalHeight });
-    c.getContext("2d").drawImage(src, 0, 0);
-    editBase = { canvas: c, data: c.getContext("2d").getImageData(0, 0, c.width, c.height) };
-    c.className = "viewer-canvas";
-    img.closest("a").replaceWith(c);
-  }
-  const lut = brightnessLut(ev), src = editBase.data.data, out = new ImageData(editBase.data.width, editBase.data.height);
-  for (let i = 0; i < src.length; i += 4) {
-    out.data[i] = lut[src[i]]; out.data[i + 1] = lut[src[i + 1]]; out.data[i + 2] = lut[src[i + 2]]; out.data[i + 3] = 255;
-  }
-  editBase.canvas.getContext("2d").putImageData(out, 0, 0);
-}
-$("#edit-ev").addEventListener("input", (e) => {
-  const ev = +e.target.value;
-  $("#edit-ev-value").textContent = `${ev > 0 ? "+" : ev < 0 ? "−" : "±"}${Math.abs(ev).toFixed(1)} EV`;
-  $("#btn-edit-save").disabled = ev === 0;
-  clearTimeout(editTimer);
-  editTimer = setTimeout(() => previewBrightness(ev).catch(() => {}), 60);
-});
-$("#btn-edit-reset").addEventListener("click", () => {
-  $("#edit-ev").value = 0;
-  $("#edit-ev").dispatchEvent(new Event("input"));
-});
-$("#btn-edit-save").addEventListener("click", () => guarded(async () => {
-  const ev = +$("#edit-ev").value;
-  const r = await api("/api/edit/brightness", "POST", { kind: viewerSrc.kind, path: viewerSrc.path, ev });
-  $("#btn-edit-save").disabled = true;
-  say(`Saving ${r.output} — it appears next to the original in a moment`);
-  watchJob(r.job);
-  const tick = async () => {
-    const job = await api(`/api/jobs/${r.job}`).catch(() => null);
-    if (job && ["queued", "running"].includes(job.status)) return setTimeout(tick, 1500);
-    if (viewerSrc?.kind === "stacks") loadStacks(); else loadGallery?.();
-  };
-  setTimeout(tick, 1500);
-}));
-$("#viewer").addEventListener("close", () => { editBase = null; });
 
 function uploadButtons(kind, name) {
   const mk = (dest, text) => el("button", { onclick: () => guarded(async () => {
@@ -1205,7 +1146,6 @@ function stackCard(s) {
         el("div", { class: "muted small" }, `${s.frames.length} frames · ${s.created ? s.created.replace("T", " ") : ""}`),
         el("div", { class: "row" },
           s.outputs.result ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(s.outputs.result, base + enc(s.outputs.result)); } }, "result") : el("span", { class: "muted small" }, "not processed"),
-          s.outputs.edited ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(s.outputs.edited, base + enc(s.outputs.edited)); } }, "edited") : null,
           s.outputs.depthmap ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(s.outputs.depthmap, base + enc(s.outputs.depthmap)); } }, "depth map") : null,
           jobInfo, s.open ? el("span", { class: "badge", title: "Still taking frames — press Finish to close it" }, "open") : null))),
     el("div", { class: "row" },
