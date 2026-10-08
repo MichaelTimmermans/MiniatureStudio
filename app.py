@@ -185,9 +185,22 @@ def safe_child(directory, name):
     return target
 
 
-def image_ext():
+def compression_ext():
+    """Every capture and stack result is saved as TIFF. `image_format` is the optional
+    compression made from it afterwards: ".png", ".jpg", or None (TIFF only)."""
     fmt = CONFIG.get("image_format", "png").lower()
-    return {"jpg": ".jpg", "jpeg": ".jpg", "tif": ".tif", "tiff": ".tif"}.get(fmt, ".png")
+    return {"jpg": ".jpg", "jpeg": ".jpg", "tif": None, "tiff": None}.get(fmt, ".png")
+
+
+def keep_tiff():
+    """Keep the TIFF next to its compressed copy (only matters when compression is on)."""
+    return bool(CONFIG.get("keep_tiff", False))
+
+
+def final_name(tif_path):
+    """The name a capture ends up with: its compressed copy, or the TIFF itself."""
+    ext = compression_ext()
+    return tif_path.with_suffix(ext).name if ext else tif_path.name
 
 
 # --------------------------------------------------------------------------
@@ -1113,11 +1126,6 @@ def write_json_atomic(path, data):
     os.replace(tmp, path)
 
 
-def raw_path_for(final_path):
-    """Stage-1 file: uncompressed TIFF next to where the final file will be."""
-    return final_path if final_path.suffix.lower() in (".tif", ".tiff") else final_path.with_suffix(".tif")
-
-
 class SaveQueue:
     """Stage 1 of saving: write each grabbed frame to disk as uncompressed TIFF as
     fast as the SD card allows, freeing its ~36 MB of RAM. Compression to the
@@ -1135,8 +1143,8 @@ class SaveQueue:
         threading.Thread(target=self._worker, daemon=True, name="raw-writer").start()
 
     def put(self, image, path, metadata, extra=None, compress=True, upload=None):
-        """compress=False keeps the raw TIFF for now (stack frames: focus-stack reads
-        TIFF directly and the frames are usually deleted afterwards)."""
+        """Writes `path` (always a .tif). compress=False leaves it as TIFF for now (stack
+        frames: the stacker reads TIFF; compression follows after stacking)."""
         with self.lock:
             self.pending.append(path.name)
         self.queue.put((image, path, metadata, extra, compress, upload))
@@ -1146,15 +1154,15 @@ class SaveQueue:
             image, path, metadata, extra, compress, upload = self.queue.get()
             started = time.time()
             try:
-                raw = raw_path_for(path)
+                raw = path
                 save_image(image, raw)
                 write_sidecar(path, metadata, extra)
                 log.info("raw %s written in %.1fs", raw.name, time.time() - started)
-                if raw == path:  # final format is TIFF: nothing left to do
-                    if upload:
-                        auto_upload(*upload)
-                elif compress:
-                    compressor.add(raw, path, upload)
+                ext = compression_ext()
+                if compress and ext:
+                    compressor.add(raw, raw.with_suffix(ext), upload)
+                elif upload:
+                    auto_upload(*upload)
             except Exception as exc:
                 log.exception("Saving %s failed", path)
                 self.last_error = f"{path.name}: {exc}"
@@ -1212,14 +1220,17 @@ class Compressor:
             self.wake.notify()
 
     def add_stack(self, stack_dir, name, after=None):
-        """Queue a stack's raw frames (kept frames, or a stack finished unprocessed)."""
-        target = image_ext()
-        if target == ".tif":
+        """Queue the TIFFs of a stack (its frames and its result) that have no compressed
+        copy yet. Returns how many were queued (0 when compression is off)."""
+        target = compression_ext()
+        if not target:
             return 0
-        frames = [f for f in stack_frames(stack_dir, name) if f.suffix.lower() in (".tif", ".tiff")]
-        for f in frames:
+        tiffs = [f for f in frame_files(stack_dir, name) if f.suffix.lower() in (".tif", ".tiff")]
+        tiffs += [f for f in stack_dir.glob(f"{name}_stacked.tif")]
+        todo = [f for f in tiffs if not f.with_suffix(target).exists()]
+        for f in todo:
             self.add(f, f.with_suffix(target), after=after)
-        return len(frames)
+        return len(todo)
 
     def converting(self, stack_name):
         """True while a frame of this stack is being converted right now."""
@@ -1263,8 +1274,9 @@ class Compressor:
                     continue
                 if raw.exists():
                     self._convert(raw, final)
-                    raw.unlink()
-                    drop_thumb_for(raw)
+                    if not keep_tiff():
+                        raw.unlink()
+                        drop_thumb_for(raw)
                     log.info("compressed %s in %.1fs", final.name, time.time() - started)
                     if item.get("upload"):
                         auto_upload(*item["upload"])
@@ -1638,21 +1650,36 @@ def focus_stack_version(binary):
     return _focus_stack_version[binary]
 
 
-def stack_frames(stack_dir, name):
+FRAME_EXT_PRIORITY = {".tif": 0, ".tiff": 0, ".png": 1, ".jpg": 2, ".jpeg": 2}
+
+
+def frame_files(stack_dir, name):
+    """Every image file of every frame (a frame can have a TIFF and a compressed copy)."""
     pattern = re.compile(rf"^{re.escape(name)}_(\d+)(\.[A-Za-z]+)$")
+    return [f for f in stack_dir.iterdir()
+            if (m := pattern.match(f.name)) and m.group(2).lower() in IMAGE_EXTS]
+
+
+def stack_frames(stack_dir, name):
+    """One file per frame, in order — the TIFF when there is one: stacking always
+    reads the uncompressed frames when they still exist."""
     frames = {}
-    for f in stack_dir.iterdir():
-        m = pattern.match(f.name)
-        if m and m.group(2).lower() in IMAGE_EXTS:
-            frames.setdefault(int(m.group(1)), f)  # raw + compressed may briefly coexist
+    for f in frame_files(stack_dir, name):
+        n = int(f.stem.rsplit("_", 1)[1])
+        if n not in frames or FRAME_EXT_PRIORITY[f.suffix.lower()] < FRAME_EXT_PRIORITY[frames[n].suffix.lower()]:
+            frames[n] = f
     return [frames[n] for n in sorted(frames)]
 
 
 def stack_outputs(stack_dir, name):
     found = {}
-    for f in stack_dir.glob(f"{name}_stacked.*"):
-        if f.suffix.lower() in IMAGE_EXTS:
-            found["result"] = f.name
+    results = sorted((f for f in stack_dir.glob(f"{name}_stacked.*") if f.suffix.lower() in IMAGE_EXTS),
+                     key=lambda f: FRAME_EXT_PRIORITY[f.suffix.lower()])
+    if results:
+        # Show the compressed copy when there is one; the TIFF stays downloadable.
+        found["result"] = results[-1].name
+        if len(results) > 1 and results[0].suffix.lower() in (".tif", ".tiff"):
+            found["result_tiff"] = results[0].name
     for key in ("depthmap", "3dview"):
         f = stack_dir / f"{name}_{key}.png"
         if f.exists():
@@ -1661,8 +1688,7 @@ def stack_outputs(stack_dir, name):
 
 
 def build_focus_stack_cmd(binary, stack_dir, name, frames, opts):
-    ext = {"jpg": "jpg", "jpeg": "jpg", "tif": "tif", "tiff": "tif"}.get(opts.get("output_format", "png"), "png")
-    output = stack_dir / f"{name}_stacked.{ext}"
+    output = stack_dir / f"{name}_stacked.tif"  # always TIFF; compression follows like for photos
     # Relative names: focus-stack runs inside the stack folder and truncates long paths in its log.
     cmd = [binary, f"--output={output.name}"]
     if opts.get("depthmap"):
@@ -1754,8 +1780,7 @@ def stack_method(opts):
 
 
 def build_halofree_cmd(stack_dir, name, frames, opts):
-    ext = {"jpg": "jpg", "jpeg": "jpg", "tif": "tif", "tiff": "tif"}.get(opts.get("output_format", "png"), "png")
-    output = stack_dir / f"{name}_stacked.{ext}"
+    output = stack_dir / f"{name}_stacked.tif"  # always TIFF; compression follows like for photos
     cmd = [sys.executable, str(HALOFREE_SCRIPT), f"--output={output.name}",
            f"--pngcompression={CONFIG.get('png_compress_level', 3)}"]
     if opts.get("depthmap"):
@@ -1837,36 +1862,32 @@ def run_focus_stack(job, name, overrides):
         raise RuntimeError(f"{method} finished but produced no output file")
     job_log(job, f"Done in {time.time() - started:.0f}s -> {output.name}")
     result = {"output": output.name, "seconds": round(time.time() - started, 1)}
+    dests = auto_upload_dests()
+    # 1. Delete the source frames (before compression: no work spent on them).
     if opts.get("delete_frames"):
-        dests = auto_upload_dests()
         if dests and CONFIG["upload"].get("stack_frames"):
             # Frames are about to disappear: upload them now, inside this job.
             for dest in dests:
                 run_upload(job, dest, "stack", name)
-            result["deleted_frames"] = delete_stack_frames(stack_dir, name)
-            job_log(job, f"Deleted {result['deleted_frames']} source frames")
-            return result
         result["deleted_frames"] = delete_stack_frames(stack_dir, name)
         job_log(job, f"Deleted {result['deleted_frames']} source frames")
-    else:
-        frames_go_too = bool(CONFIG["upload"].get("stack_frames") and auto_upload_dests())
-        queued = compressor.add_stack(stack_dir, name, after=("stack", name) if frames_go_too else None)
-        if queued:
-            job_log(job, f"Queued {queued} kept frames for compression")
-        if queued and frames_go_too:
-            job_log(job, "Upload starts when the frames are compressed")
-            return result
+    # 2. Compress the result (and the kept frames) in the background; 3. upload after that.
+    queued = compressor.add_stack(stack_dir, name, after=("stack", name) if dests else None)
+    if queued:
+        job_log(job, f"Queued {queued} TIFF(s) for compression"
+                     + (" — the upload starts when they are done" if dests else ""))
+        return result
     result["uploads"] = auto_upload("stack", name)
     return result
 
 
 def delete_stack_frames(stack_dir, name):
-    frames = stack_frames(stack_dir, name)
-    for f in frames:
-        f.unlink()
+    count = len(stack_frames(stack_dir, name))
+    for f in frame_files(stack_dir, name):  # TIFF and compressed copy
+        f.unlink(missing_ok=True)
         f.with_suffix(".json").unlink(missing_ok=True)
         drop_thumb("stacks", f"{name}/{f.name}")
-    return len(frames)
+    return count
 
 
 # --------------------------------------------------------------------------
@@ -2070,7 +2091,7 @@ def run_sweep(job, name, positions, settle_ms, process):
             with camera_lock:
                 camera.set_controls({"LensPosition": float(pos)})
                 time.sleep(settle_ms / 1000)
-                path = stack_dir / f"{name}_{n}{image_ext()}"
+                path = stack_dir / f"{name}_{n}.tif"
                 image, metadata = camera.grab()
             if n == 1 and metadata.get("LensPosition") is None and "AfState" not in metadata:
                 raise RuntimeError(
@@ -2683,9 +2704,9 @@ def api_capture():
     last_capture["t"] = time.time()
     note_activity()
     label = (request.get_json(silent=True) or {}).get("label", "")
-    directory, ext = data_dir("photos"), image_ext()
-    stem = unique_stem(directory, build_basename(label), ext)
-    path = directory / f"{stem}{ext}"
+    directory = data_dir("photos")
+    stem = unique_stem(directory, build_basename(label), compression_ext() or ".tif")
+    path = directory / f"{stem}.tif"
     started = time.time()
     with camera_lock:
         image, metadata = camera.grab()
@@ -2693,9 +2714,9 @@ def api_capture():
     image, box = apply_crop(image)
     # Encoding + upload run in the background; auto-upload starts once the file exists.
     exposure = exposure_report(image, metadata)
-    save_queue.put(image, path, metadata, {"label": label, "crop": box}, upload=("photo", path.name))
+    save_queue.put(image, path, metadata, {"label": label, "crop": box}, upload=("photo", final_name(path)))
     log.info("photo %s: grab %.1fs, queued after %.1fs", path.name, grabbed, time.time() - started)
-    return jsonify(ok=True, file=path.name, seconds=round(grabbed, 2), saving=True, exposure=exposure,
+    return jsonify(ok=True, file=final_name(path), seconds=round(grabbed, 2), saving=True, exposure=exposure,
                    uploads=["queued"] if auto_upload_dests() else [])
 
 
@@ -2746,7 +2767,7 @@ def api_stack_frame():
         note_activity()
         active_stack["count"] += 1
         n, name, stack_dir = active_stack["count"], active_stack["name"], Path(active_stack["dir"])
-    path = stack_dir / f"{name}_{n}{image_ext()}"
+    path = stack_dir / f"{name}_{n}.tif"
     started = time.time()
     try:
         with camera_lock:
@@ -2951,7 +2972,7 @@ def api_jobs_clear():
 @app.route("/api/stacks")
 def api_stacks():
     base = data_dir("stacks")
-    stacks = []
+    stacks, unprocessed = [], 0
     for d in sorted((p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")),
                     key=lambda p: p.stat().st_mtime, reverse=True):
         frames = stack_frames(d, d.name)
@@ -2967,6 +2988,9 @@ def api_stacks():
         dead = None
         if not is_open and not busy and "result" not in outputs and len(frames) < 2:
             dead = f"it has {len(frames)} frame{'' if len(frames) == 1 else 's'} and no result — nothing to stack"
+        if (not is_open and not busy and "result" not in outputs and len(frames) >= 2
+                and not stack_busy(d.name)):
+            unprocessed += 1
         stacks.append({
             "problem": problem, "dead": dead,
             "name": d.name,
@@ -2978,7 +3002,7 @@ def api_stacks():
             "job": job and {**{k: job[k] for k in ("id", "status", "error")},
                             "position": stack_queue_position(job["id"])},
         })
-    return jsonify(stacks=stacks, unprocessed=len(unprocessed_stacks()))
+    return jsonify(stacks=stacks, unprocessed=unprocessed)  # counted in the same scan
 
 
 def list_files(kind, exts, limit=100):
@@ -2992,7 +3016,21 @@ def list_files(kind, exts, limit=100):
 
 @app.route("/api/photos")
 def api_photos():
-    return jsonify(photos=list_files("photos", IMAGE_EXTS))
+    """One entry per photo: the compressed copy when there is one, with its kept TIFF
+    as `tiff`; a photo still waiting for compression shows as its TIFF."""
+    files = list_files("photos", IMAGE_EXTS, limit=200)
+    by_stem = {}
+    for f in files:
+        by_stem.setdefault(Path(f["name"]).stem, []).append(f)
+    photos = []
+    for f in files:
+        siblings = by_stem[Path(f["name"]).stem]
+        is_tiff = Path(f["name"]).suffix.lower() in (".tif", ".tiff")
+        if is_tiff and len(siblings) > 1:
+            continue  # listed as the `tiff` of its compressed copy
+        tiff = next((s["name"] for s in siblings if s is not f and Path(s["name"]).suffix.lower() in (".tif", ".tiff")), None)
+        photos.append({**f, "tiff": tiff})
+    return jsonify(photos=photos[:100])
 
 
 def drop_thumb(kind, relpath):
@@ -3033,10 +3071,12 @@ def api_photo_delete(name):
     path = safe_child(data_dir("photos"), name)
     if not path.is_file():
         abort(404)
-    path.unlink()
-    if path.suffix.lower() != ".json":
-        path.with_suffix(".json").unlink(missing_ok=True)
-    drop_thumb("photos", name)
+    # The photo with its kept TIFF / compressed copy and its metadata file.
+    for f in [path] + [path.with_suffix(e) for e in IMAGE_EXTS if path.with_suffix(e) != path]:
+        if f.is_file():
+            f.unlink()
+            drop_thumb("photos", f.name)
+    path.with_suffix(".json").unlink(missing_ok=True)
     return jsonify(ok=True)
 
 
@@ -3097,7 +3137,7 @@ def api_upload():
 # Routes — settings
 # --------------------------------------------------------------------------
 
-EDITABLE_SETTINGS = {"filename_pattern", "image_format", "jpeg_quality", "png_compress_level",
+EDITABLE_SETTINGS = {"filename_pattern", "image_format", "keep_tiff", "jpeg_quality", "png_compress_level",
                      "save_metadata", "persist_controls", "next_seq", "focus_stack", "upload",
                      "camera", "sweep", "ui", "crop", "processing"}
 

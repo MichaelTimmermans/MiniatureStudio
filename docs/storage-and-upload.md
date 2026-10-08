@@ -8,6 +8,21 @@ A pattern in Python `str.format` syntax (Settings → Files), e.g.
 `{dt:%Y%m%d_%H%M%S}_{label}` or `{seq:04d}_{label}`. `{label}` is what you type
 on the Capture tab; `{seq}` increments every time it is used.
 
+## File formats
+
+Every photo, stack frame and stack result is saved as an **uncompressed TIFF**
+first — the fastest lossless option on a Pi. **Settings → Files → Compression**
+then optionally makes a smaller copy in the background:
+
+| Compression | Keep the TIFF | Files per image |
+|---|---|---|
+| None | — | the TIFF |
+| PNG (lossless, ~half the size) or JPG (small, lossy) | off (default) | the compressed copy |
+| PNG or JPG | on | the TIFF **and** the compressed copy |
+
+The gallery and the Stacks tab show one entry per image; a kept TIFF gets its
+own **Download TIFF** button. Stacking always uses the TIFF frames.
+
 ## Gallery
 
 The **Gallery** and **Stacks** tabs show everything you shot, with view,

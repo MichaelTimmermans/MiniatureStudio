@@ -1096,6 +1096,7 @@ async function loadGallery() {
       el("div", { class: "row" },
         el("a", { class: "button", href: url + "?download=1" }, "Download"),
         isTiff(f.name) ? el("a", { class: "button", href: url + "?as=png", title: "Compressed on the Pi first (~10-15 s on a Pi 3B)" }, "Download PNG") : null,
+        f.tiff ? el("a", { class: "button", href: `/media/photos/${enc(f.tiff)}?download=1` }, "Download TIFF") : null,
         uploadButtons("photo", f.name),
         deleteButton(`/api/photos/${enc(f.name)}`, f.name, loadGallery))));
   }
@@ -1143,6 +1144,7 @@ function stackCard(s) {
       s.frames.length ? el("button", { onclick: () => { frames.hidden = !frames.hidden; } }, "Frames") : null,
       el("a", { class: "button", href: `/download/stack/${enc(s.name)}.zip` }, "Download zip"),
       s.outputs.result ? el("a", { class: "button", href: base + enc(s.outputs.result) + "?download=1" }, "Download result") : null,
+      s.outputs.result_tiff ? el("a", { class: "button", href: base + enc(s.outputs.result_tiff) + "?download=1" }, "Download TIFF") : null,
       s.open ? null : uploadButtons("stack", s.name),
       s.open ? null : deleteButton(`/api/stacks/${enc(s.name)}`, `stack ${s.name} (all frames)`, loadStacks)),
     frames);
@@ -1228,7 +1230,6 @@ const FOCUS_STACK_FIELDS = {
   method: { label: "Method (halofree = no glow around edges on a black backdrop; focus-stack = classic wavelet stacking)", options: ["halofree", "focus-stack"] },
   halofree_threshold: { label: "Halo-free: detail threshold (× noise; higher = less backdrop noise counted as detail)", type: "number" },
   halofree_band: { label: "Halo-free: halo band around the model (pixels at half size)", type: "number" },
-  output_format: { label: "Output format", options: ["png", "jpg", "tif"] },
   consistency: { label: "Consistency (0-2)", type: "number" },
   denoise: { label: "Denoise", type: "number", step: "0.1" },
   threads: { label: "Threads (empty = auto: 1 on a 1 GB Pi 3B, more with more RAM)", type: "number" },
@@ -1294,7 +1295,10 @@ const SETTINGS_SECTIONS = [
   ["Files", null, {
     filename_pattern: { label: "File name pattern ({dt:%Y%m%d_%H%M%S}, {label}, {seq:03d})", type: "text" },
     next_seq: { label: "Next {seq}", type: "number" },
-    image_format: { label: "Image format (tif = no compression work, ~1.8× larger; png = compressed in the background)", options: ["png", "tif", "jpg"] },
+    image_format: { label: "Compression (every capture is saved as TIFF first; this makes a smaller copy in the background)",
+      options: ["png", "jpg", "tif"],
+      optionLabels: { png: "PNG — lossless, ~half the size", jpg: "JPG — small, lossy", tif: "None — keep only the TIFF" } },
+    keep_tiff: { label: "Keep the TIFF after compressing (two files per image)", type: "checkbox" },
     png_compress_level: { label: "PNG compression (0-9, lossless; lower = faster)", type: "number" },
     jpeg_quality: { label: "JPG quality", type: "number" },
     save_metadata: { label: "Save metadata sidecar (.json)", type: "checkbox" },

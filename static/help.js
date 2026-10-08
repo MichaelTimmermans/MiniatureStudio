@@ -54,7 +54,8 @@ const HELP = {
   // ---------------------------------------------------------------- Settings: files
   filename_pattern: "How files are named. {dt:%Y%m%d_%H%M%S} = date and time, {label} = the label you type on the Capture tab, {seq:03d} = a counter (001, 002, …). Example: {seq:04d}_{label}.",
   next_seq: "The next number used for {seq} in the file name pattern. Change it to continue a numbering.",
-  image_format: "File format for photos and stack frames. png: lossless, smaller files, compressed in the background. tif: lossless, no compression work (about 1.8× larger). jpg: small but lossy.",
+  image_format: "Every photo, stack frame and stack result is saved as an uncompressed TIFF first (fastest, lossless). This setting makes a compressed copy in the background: png (lossless, about half the size), jpg (small, lossy) or none (keep only the TIFF). Stacking always uses the TIFF frames.",
+  keep_tiff: "After compressing, keep the TIFF as well (two files per image, e.g. for editing later) or delete it (one file). Source frames you delete after stacking are removed before compression, so no time is spent on them.",
   png_compress_level: "PNG compression 0-9. Always lossless: higher only makes files smaller and saving slower. 1-3 is a good balance on a Pi.",
   jpeg_quality: "JPG quality 1-100 (only for the jpg format). 95 is visually lossless for most uses.",
   save_metadata: "Saves a .json file next to every photo with the camera settings used (exposure, gain, white balance, lens position…).",
@@ -84,7 +85,6 @@ const HELP = {
   method: "halofree: made for miniatures on a black backdrop — no glow around bright edges, low memory use. focus-stack: the classic wavelet stacker; can give slightly crisper micro-detail but draws halos on dark backgrounds.",
   halofree_threshold: "Halo-free: how much sharper than the sensor noise an area must be to count as detail. Higher = less backdrop noise treated as detail; too high loses faint detail.",
   halofree_band: "Halo-free: width of the zone around the model where glow is removed, in half-resolution pixels. Raise it if a faint glow remains further out.",
-  output_format: "File format of the stacked result: png (lossless), tif (lossless, larger) or jpg (small, lossy).",
   consistency: "focus-stack: filters isolated pixels that come from a different frame than their neighbours. 2 = strongest, least noise. 0 = off.",
   denoise: "focus-stack: noise reduction on the merged image. 1.0 = default, 0 = off, higher = smoother.",
   threads: "focus-stack: number of CPU threads. Empty = automatic, based on the Pi's memory (1 on a 1 GB Pi 3B). More threads use more memory.",
