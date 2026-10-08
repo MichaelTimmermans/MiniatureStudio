@@ -1211,11 +1211,12 @@ class Compressor:
         tmp.write_text(json.dumps(self.items), encoding="utf-8")
         os.replace(tmp, self.state_file)
 
-    def add(self, raw, final, upload=None, after=None):
+    def add(self, raw, final, upload=None, after=None, priority=0):
+        """priority 0 (photos, stack results) is converted before 1 (stack frames)."""
         with self.lock:
             if not any(i["raw"] == str(raw) for i in self.items):
                 self.items.append({"raw": str(raw), "final": str(final), "upload": upload,
-                                   "after": list(after) if after else None})
+                                   "after": list(after) if after else None, "priority": priority})
                 self._persist()
             self.wake.notify()
 
@@ -1225,12 +1226,17 @@ class Compressor:
         target = compression_ext()
         if not target:
             return 0
-        tiffs = [f for f in frame_files(stack_dir, name) if f.suffix.lower() in (".tif", ".tiff")]
-        tiffs += [f for f in stack_dir.glob(f"{name}_stacked.tif")]
-        todo = [f for f in tiffs if not f.with_suffix(target).exists()]
-        for f in todo:
-            self.add(f, f.with_suffix(target), after=after)
-        return len(todo)
+        # The result first, so it is ready (and uploaded) before the frames are done.
+        results = [f for f in stack_dir.glob(f"{name}_stacked.tif") if not f.with_suffix(target).exists()]
+        frames = [f for f in frame_files(stack_dir, name)
+                  if f.suffix.lower() in (".tif", ".tiff") and not f.with_suffix(target).exists()]
+        # Uploads wait for the frames only when the frames are uploaded too.
+        frames_after = after if CONFIG["upload"].get("stack_frames") else None
+        for f in results:
+            self.add(f, f.with_suffix(target), after=after, priority=0)
+        for f in frames:
+            self.add(f, f.with_suffix(target), after=frames_after, priority=1)
+        return len(results) + len(frames)
 
     def converting(self, stack_name):
         """True while a frame of this stack is being converted right now."""
@@ -1258,7 +1264,10 @@ class Compressor:
             while focus_stack_running() or move_running():
                 time.sleep(3)
             with self.lock:
-                while not (item := next((i for i in self.items if i["raw"] not in self.busy), None)):
+                # Lowest priority number first (results and photos before stack frames),
+                # otherwise in the order they were added.
+                while not (item := min((i for i in self.items if i["raw"] not in self.busy),
+                                       key=lambda i: i.get("priority", 0), default=None)):
                     self.wake.wait()
                 self.busy.add(item["raw"])
             raw, final = Path(item["raw"]), Path(item["final"])
@@ -1874,8 +1883,9 @@ def run_focus_stack(job, name, overrides):
     # 2. Compress the result (and the kept frames) in the background; 3. upload after that.
     queued = compressor.add_stack(stack_dir, name, after=("stack", name) if dests else None)
     if queued:
-        job_log(job, f"Queued {queued} TIFF(s) for compression"
-                     + (" — the upload starts when they are done" if dests else ""))
+        job_log(job, f"Queued {queued} TIFF(s) for compression (the result first)")
+    if dests and compressor.pending_for(("stack", name)):
+        job_log(job, "The upload starts when the compression it needs is done")
         return result
     result["uploads"] = auto_upload("stack", name)
     return result

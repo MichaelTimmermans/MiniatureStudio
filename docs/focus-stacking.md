@@ -27,7 +27,9 @@ Frames go to `stacks/<name>/<name>_1.tif`, `_2.tif`, …; the stacker always
 reads these TIFFs and writes `<name>_stacked.tif`. Then, in this order: the
 source frames are deleted (if "Delete source frames" is on), the remaining TIFFs
 are compressed (if compression is on, keeping or removing the TIFFs — see
-[File formats](storage-and-upload.md#file-formats)), and the stack is uploaded.
+[File formats](storage-and-upload.md#file-formats)) — the result first, before
+any frames, also of other stacks — and the stack is uploaded: right after the
+result when only results are uploaded, after the frames when those go too.
 So 6 frames in → 1 result out (TIFF, compressed copy, or both). During a stack,
 exposure and white balance are locked so all frames match.
 
