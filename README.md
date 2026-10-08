@@ -58,7 +58,7 @@ painted with Black 3.0. The 3D-printable parts are on Thingiverse:
 
 - Live preview with grid, histogram, clipping warning and a 100 % focus check
 - Every camera control in the browser, with presets that load at boot
-- Photos, video, and **focus stacking** — manual, or an automatic lens sweep on
+- Photos and **focus stacking** — manual, or an automatic lens sweep on
   autofocus cameras — with a halo-free method made for black backdrops
 - Exposure check before shooting: judged on the model, with a suggested exposure
 - Crop to a tall or wide frame before shooting
@@ -86,7 +86,7 @@ cd MiniatureStudio && ./install.sh
 The installer:
 
 1. installs the system packages from [`apt-packages.txt`](apt-packages.txt)
-   (picamera2, Flask, OpenCV, ffmpeg, rclone, cifs-utils, nfs-common, …);
+   (picamera2, Flask, OpenCV, rclone, cifs-utils, nfs-common, …);
 2. clones the app to `/opt/miniaturestudio` (or uses your clone);
 3. builds [focus-stack](https://github.com/PetteriAimonen/focus-stack) from
    `vendor/focus-stack` (a git submodule) — roughly a quarter of an hour on a

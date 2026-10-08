@@ -147,12 +147,6 @@
           The sweep becomes a stack like a manual one (see the processing note above).</div>
       </div>
 
-      <h3>Video</h3>
-      <div class="row">
-        <button id="btn-video">⏺ Start video</button>
-        <span id="video-timer"></span>
-      </div>
-
       <div id="stack-status" class="status"></div>
       <div id="message" class="status"></div>
     </div>
@@ -273,10 +267,9 @@
         <button class="sel-delete danger" disabled>Delete selected</button>
         <span class="muted small">Shift-click to select a range</span>
       </div>
+      <div id="gallery-msg" class="status"></div>
       <h3>Photos</h3>
       <div id="photos" class="gallery"></div>
-      <h3>Videos</h3>
-      <div id="videos"></div>
     </div>
 
     <!-- Jobs -->
@@ -341,7 +334,7 @@
           <button id="btn-storage-sd" hidden>Back to SD card</button>
           <button id="btn-storage-forget" class="danger" hidden>Forget USB disk</button>
         </div>
-        <div class="muted small">Photos, stacks and videos go to a <code>MiniatureStudio</code> folder on the disk.
+        <div class="muted small">Photos and stacks go to a <code>MiniatureStudio</code> folder on the disk.
           ext4, exFAT, FAT32 and NTFS work; the disk is mounted again at every boot and when you replug it.
           A USB SSD is fastest and wears least.</div>
         <div id="storage-message" class="status small"></div>

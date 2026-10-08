@@ -41,7 +41,9 @@ USB_FSTYPES = {"ext4", "vfat", "exfat", "ntfs"}
 
 HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$|^\[?[0-9A-Fa-f:.]+\]?$")
 SHARE_RE = re.compile(r"^[A-Za-z0-9._ $/-]{1,200}$")
-MOUNT_RE = re.compile(r"^/mnt/[A-Za-z0-9._-]{1,64}$")
+# One plain folder name under /mnt: starts with a letter or digit, so "." and ".."
+# (which would mean /mnt or /) can never match.
+MOUNT_RE = re.compile(r"^/mnt/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 USER_RE = re.compile(r"^[^\n\r,=]{0,128}$")
 VERSION_RE = re.compile(r"^(|1\.0|2\.0|2\.1|3\.0|3\.02|3\.1\.1|3)$")
 
@@ -339,8 +341,8 @@ def main():
         fail("invalid server name / IP")
     if not SHARE_RE.match(share) or ".." in share:
         fail("invalid share name")
-    if not MOUNT_RE.match(mount_point):
-        fail("mount point must be /mnt/<name>")
+    if not MOUNT_RE.match(mount_point) or mount_point == USB_MOUNT:
+        fail("mount point must be /mnt/<name> (letters, digits, . _ -), not the USB disk's folder")
     if not USER_RE.match(username) or not USER_RE.match(domain) or "\n" in password:
         fail("invalid username / domain / password")
     if not VERSION_RE.match(version):

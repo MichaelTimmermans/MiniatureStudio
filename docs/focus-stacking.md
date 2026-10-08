@@ -49,6 +49,12 @@ frames stay raw TIFFs (fastest for the stacker), so they take more disk space
 for a while. Stacks run one at a time; the **Jobs** tab shows progress and logs,
 and each stack card its queue position.
 
+Only one task works on a stack at a time — capturing, processing, compressing its
+frames, uploading or moving files. A Process or Delete press while another task
+is busy with that stack says what is going on instead of interfering. A stack
+that cannot be processed (fewer than 2 frames and no result) says so on its card,
+with Delete; a damaged `stack.json` is reported but the frames stay usable.
+
 - "Delete source frames after a successful stack" is on by default (saves
   space); if frames are uploaded as well, that happens first. Untick it to keep
   the frames, e.g. to debug a stack — **Download zip** then contains all of them.

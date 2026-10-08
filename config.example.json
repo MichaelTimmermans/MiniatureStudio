@@ -5,8 +5,7 @@
   },
   "paths": {
     "photos": "photos",
-    "stacks": "stacks",
-    "videos": "videos"
+    "stacks": "stacks"
   },
   "storage": {
     "target": "sd",
@@ -32,17 +31,6 @@
     "save_queue": 2,
     "compress_workers": 0,
     "lock_exposure_in_stacks": true
-  },
-  "video": {
-    "size": [
-      1920,
-      1080
-    ],
-    "preview_size": [
-      768,
-      432
-    ],
-    "bitrate": 10000000
   },
   "processing": {
     "mode": "idle",

@@ -74,9 +74,9 @@ automatic lens sweep.
 ### USB webcams
 
 UVC webcams work through the same app: pick them in the camera list (shown
-as "(USB)"). Tested with a Sony IMX179 USB camera. MJPEG webcams are passed through without re-encoding — preview
-and video (`.avi`, needs ffmpeg) cost the Pi almost nothing. YUYV-only
-webcams do preview and photos but no video. USB cameras can be plugged in
+as "(USB)"). Tested with a Sony IMX179 USB camera. MJPEG webcams are passed
+through without re-encoding, so the preview costs the Pi almost nothing; YUYV-only
+webcams are converted. USB cameras can be plugged in
 while running: press **Rescan cameras**. Resolution: the webcam's largest
 MJPEG size (override with `camera.usb_size` in `config.json`).
 

@@ -67,7 +67,10 @@ def main():
     n = len(files)
     total = 2 * n + 2
     step = 0
-    ref_i = int(opts["reference"]) if opts.get("reference", "") != "" else n // 2
+    ref_i = int(float(opts["reference"])) if opts.get("reference", "") != "" else n // 2
+    if not 0 <= ref_i < n:
+        print(f"Reference frame {ref_i} does not exist ({n} frames, 0-{n - 1}) — using the middle one", flush=True)
+        ref_i = n // 2
     threshold = float(opts.get("threshold", 40))  # x noise floor: model detail is 100x+, backdrop noise <30x
 
     ref = load(files[ref_i])
@@ -163,7 +166,7 @@ def main():
     keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= min_area
     detail = keep[labels]
     del sum_s, peaked, labels
-    radius = int(opts.get("halo-band", 40))  # half-resolution pixels (~80 at full size)
+    radius = int(float(opts.get("halo-band", 40)))  # half-resolution pixels (~80 at full size)
     band = cv2.dilate(detail, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1)))
     # Only a clearly darker frame wins in the band (that is a glow); small noise
     # differences keep the reference frame, so no patches of other frames appear.

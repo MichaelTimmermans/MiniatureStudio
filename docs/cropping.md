@@ -19,5 +19,4 @@ Photos, stack frames and lens sweeps are cut to that frame when they are
 captured; all frames of a stack get the same crop. Cropping costs the Pi
 nothing — it even makes saving, compressing and stacking faster (a 3:4 crop
 removes about 44 % of the pixels). The crop is stored on the Pi, so it applies
-from every device, and it is recorded in each photo's `.json` file. Videos are
-not cropped.
+from every device, and it is recorded in each photo's `.json` file.

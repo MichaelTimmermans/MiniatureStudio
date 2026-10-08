@@ -43,13 +43,13 @@ const HELP = {
 
   // ---------------------------------------------------------------- stack processing
   mode: "When finished stacks are stacked. 'When idle': nothing heavy runs while you shoot; once you have not captured anything for the idle time, all waiting stacks are processed one after another, then compressed and uploaded. 'Immediately': each stack right after Finish (slows the Pi while you keep shooting). 'Manually': only when you press Process / Process all in the Stacks tab.",
-  idle_minutes: "Minutes without capturing, stacking, video or focus check before waiting stacks are processed (mode 'When idle').",
+  idle_minutes: "Minutes without capturing, stacking or focus check before waiting stacks are processed (mode 'When idle').",
 
   // ---------------------------------------------------------------- camera check
   camera_check: "Shows the cameras the Pi detects, the camera lines in config.txt and the kernel's camera messages, with a verdict — no SSH needed.",
 
   // ---------------------------------------------------------------- crop
-  crop: "Crop photos and stack frames to a tall or wide frame. Drag the orange frame on the preview to position it; the darkened part is cut off. The grid and histogram follow the crop. Costs the Pi nothing — it even speeds up saving and stacking (fewer pixels). Videos are not cropped.",
+  crop: "Crop photos and stack frames to a tall or wide frame. Drag the orange frame on the preview to position it; the darkened part is cut off. The grid and histogram follow the crop. Costs the Pi nothing — it even speeds up saving and stacking (fewer pixels).",
 
   // ---------------------------------------------------------------- Settings: files
   filename_pattern: "How files are named. {dt:%Y%m%d_%H%M%S} = date and time, {label} = the label you type on the Capture tab, {seq:03d} = a counter (001, 002, …). Example: {seq:04d}_{label}.",
@@ -67,9 +67,9 @@ const HELP = {
   compress_workers: "Background workers that compress TIFF to PNG, each as a separate low-priority process. 0 = automatic by RAM: 1 on a 1 GB Pi, 2 on 2 GB, one per spare CPU core above that. Applies after a restart.",
 
   // ---------------------------------------------------------------- Settings: upload
-  auto_drive: "Upload photos, videos and finished stacks to Google Drive automatically as soon as they are saved (needs Connect Google Drive).",
+  auto_drive: "Upload photos and finished stacks to Google Drive automatically as soon as they are saved (needs Connect Google Drive).",
   rclone_remote: "Where on Google Drive files go, as rclone remote:folder. Default gdrive:MiniatureStudio.",
-  auto_nas: "Copy photos, videos and finished stacks to the NAS automatically.",
+  auto_nas: "Copy photos and finished stacks to the NAS automatically.",
   nas_path: "Folder on the mounted NAS share where files are copied to. Set automatically when you use Mount NAS.",
   nas_require_mount: "Refuse to copy when the NAS folder is not on a mounted share — otherwise files would silently fill the SD card.",
   stack_frames: "Also upload every source frame of a stack. Off: only the stacked result (and depth map) is uploaded.",

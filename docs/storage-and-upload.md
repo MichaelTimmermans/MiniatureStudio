@@ -29,12 +29,12 @@ unplugging. A USB SSD is the fastest and most durable option.
 
 ## Disk space limit
 
-New captures (photos, stacks, sweeps, videos) stop when the capture disk is
+New captures (photos, stacks, sweeps) stop when the capture disk is
 **80 % full**, so stacking, compressing and moving always have room and the disk
 never fills up completely. The header turns orange from 70 % and shows
 **⛔ disk full — capturing paused** at the limit; an open stack can still be
-finished and processed, a running sweep stops and stacks the frames it has, and a
-running video stops at 90 %. Delete, move or upload photos and stacks to continue.
+finished and processed, and a running sweep stops and stacks the frames it has.
+Delete, move or upload photos and stacks to continue.
 The limit is `storage.max_used_pct` in `config.json`.
 
 ## Upload
@@ -43,7 +43,7 @@ The limit is `storage.max_used_pct` in `config.json`.
   the tab that opens. Afterwards Google redirects to a `http://127.0.0.1:53682/…`
   address; when you are not browsing on the Pi itself that page fails to load —
   copy the full address and paste it into the app. The app then configures an
-  rclone remote. Photos, videos and processed stacks are uploaded
+  rclone remote. Photos and processed stacks are uploaded
   **automatically** (can be switched off).
 - **NAS**: **Settings → NAS**: enter server, share and (for SMB) credentials, then
   **Mount NAS**. The share is added to `/etc/fstab` (with `nofail`, so a missing

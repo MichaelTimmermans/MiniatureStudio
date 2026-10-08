@@ -3,9 +3,8 @@
 
 Single global camera backend guarded by ``camera_lock``. Still configuration is
 dual-stream (``main`` = full sensor resolution for captures, ``lores`` = MJPEG
-preview), so photos never interrupt the live preview. Video temporarily
-reconfigures the camera. Focus stacking uses the vendored focus-stack binary
-(vendor/focus-stack) in a background job.
+preview), so photos never interrupt the live preview. Focus stacking runs in
+background jobs (halo-free stacker or the vendored focus-stack binary).
 """
 import atexit
 import io
@@ -31,7 +30,6 @@ EXAMPLE_CONFIG_PATH = BASE_DIR / "config.example.json"
 VENDORED_FOCUS_STACK = BASE_DIR / "vendor" / "focus-stack" / "build" / "focus-stack"
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
-VIDEO_EXTS = {".mp4", ".h264", ".avi"}
 
 log = logging.getLogger("miniaturestudio")
 app = Flask(__name__)
@@ -72,7 +70,7 @@ def save_config():
 
 
 USB_MOUNT = Path("/mnt/miniaturestudio-usb")  # managed by scripts/miniaturestudio-mount
-DATA_KINDS = ("photos", "stacks", "videos")
+DATA_KINDS = ("photos", "stacks")
 
 
 class StorageUnavailable(RuntimeError):
@@ -384,9 +382,9 @@ class RealCamera:
 
     def __init__(self, index=0, stream=None):
         from picamera2 import Picamera2
-        from picamera2.outputs import FfmpegOutput, FileOutput
+        from picamera2.outputs import FileOutput
 
-        self._FfmpegOutput, self._FileOutput = FfmpegOutput, FileOutput
+        self._FileOutput = FileOutput
         self._pick_encoders()
         self.index = index
         self.af_tuning_added = str(AF_TUNING_DIR) in os.environ.get("LIBCAMERA_RPI_TUNING_FILE", "")
@@ -429,7 +427,7 @@ class RealCamera:
             return []
 
     def _pick_encoders(self):
-        """Pi 3/4 (VC4) have hardware MJPEG/H.264 encoders; the Pi 5 does not."""
+        """Pi 3/4 (VC4) have a hardware MJPEG encoder for the preview; the Pi 5 does not."""
         from picamera2 import encoders
 
         pisp = False
@@ -440,8 +438,6 @@ class RealCamera:
             pass
         if pisp:
             self._make_preview_encoder = lambda size=None: encoders.JpegEncoder(q=80)
-            libav = getattr(encoders, "LibavH264Encoder", None)
-            self._H264Encoder = libav or encoders.H264Encoder
         else:
             # Picamera2 derives the MJPEG bitrate from the sensor mode's maximum frame
             # rate: ~10 fps in the full-resolution mode gave ~16 KB frames, i.e. a blocky
@@ -449,7 +445,6 @@ class RealCamera:
             # per frame as if at 30 fps, so give it a fixed high-quality bitrate instead.
             self._make_preview_encoder = lambda size=None: encoders.MJPEGEncoder(
                 bitrate=int(40_000_000 * (size[0] * size[1]) / (1920 * 1080)) if size else None)
-            self._H264Encoder = encoders.H264Encoder
 
     # -- modes --------------------------------------------------------------
     @property
@@ -490,13 +485,12 @@ class RealCamera:
         cfg["controls"]["FrameDurationLimits"] = (100, 1_000_000)
         return self._with_controls(cfg)
 
-    def _apply_saved_controls(self, frame_limits=True):
+    def _apply_saved_controls(self):
         if self.applied:
             cc = self.picam2.camera_controls
             try:
-                self.picam2.set_controls({**effective_controls(self.applied, cc),
-                                          **(frame_limits_for(self.applied, cc) if frame_limits else {})})
-            except Exception as exc:  # e.g. a control invalid in video mode
+                self.picam2.set_controls({**effective_controls(self.applied, cc), **frame_limits_for(self.applied, cc)})
+            except Exception as exc:  # e.g. a control the current mode rejects
                 log.warning("Could not re-apply controls: %s", exc)
 
     def start_still_mode(self):
@@ -553,7 +547,7 @@ class RealCamera:
     # -- controls -----------------------------------------------------------
     def set_controls(self, controls):
         extra = {}
-        if self.mode != "video" and {"ExposureTime", "ExposureTimeMode", "AeEnable"} & set(controls):
+        if {"ExposureTime", "ExposureTimeMode", "AeEnable"} & set(controls):
             extra = frame_limits_for({**self.applied, **controls}, self.picam2.camera_controls)
         self.picam2.set_controls({**controls, **extra})  # the frame limit is not stored with the controls
         self.applied.update(controls)
@@ -583,16 +577,18 @@ class RealCamera:
                 preview_md = self.picam2.capture_metadata()
             except Exception:
                 pass
-            # Preview runs binned: switch to the full sensor mode for this one frame.
-            self.stop_all()
-            self.picam2.configure(self._still_config(with_lores=False))
-            self.picam2.start()
         skipped = 0
         try:
+            if switched:
+                # Preview runs binned: switch to the full sensor mode for this one frame.
+                # Inside the try, so a failed switch still brings the preview back.
+                self.stop_all()
+                self.picam2.configure(self._still_config(with_lores=False))
+                self.picam2.start()
             req = self.picam2.capture_request()
             # After a mode switch auto exposure / white balance need a few frames to
             # settle; the first frame can be a stop off (seen in real stacks). Wait until
-            # two consecutive frames agree, at most 6 frames. Manual settings: no wait.
+            # two consecutive frames agree, at most 10 frames. Manual settings: no wait.
             while switched and self.auto_adjusting and skipped < 10:
                 md = req.get_metadata()
                 req.release()
@@ -609,8 +605,11 @@ class RealCamera:
                 req.release()
         finally:
             if switched:
-                self.picam2.stop()
-                self.start_still_mode()
+                try:
+                    self.picam2.stop()
+                    self.start_still_mode()
+                except Exception:
+                    log.exception("Restoring the live preview after a capture failed")
         if preview_md:
             log.info("capture: preview %s -> photo %s (%d settle frames)",
                      exposure_summary(preview_md), exposure_summary(metadata), skipped)
@@ -653,35 +652,6 @@ class RealCamera:
             # Lock the found position in manual mode — convenient for stacking.
             self.set_controls({"AfMode": 0, "LensPosition": lens})
         return ok, lens
-
-    # -- video --------------------------------------------------------------
-    def start_video(self, stem, directory):
-        vid = CONFIG["video"]
-        self.stop_all()
-        cfg = self.picam2.create_video_configuration(
-            main={"size": tuple(vid["size"]), "format": "YUV420"},
-            lores={"size": tuple(vid["preview_size"]), "format": "YUV420"},
-            display=None,
-            encode="main",
-        )
-        self.picam2.configure(cfg)
-        if shutil.which("ffmpeg"):
-            path = directory / f"{stem}.mp4"
-            output = self._FfmpegOutput(str(path))
-        else:
-            path = directory / f"{stem}.h264"
-            output = self._FileOutput(str(path))
-        self.picam2.start_encoder(self._H264Encoder(bitrate=int(vid["bitrate"])), output, name="main")
-        self.picam2.start_encoder(self._make_preview_encoder(vid["preview_size"]), self._FileOutput(self.stream),
-                                  name="lores")
-        self.picam2.start()
-        self._apply_saved_controls(frame_limits=False)  # video keeps its fixed frame rate
-        self.mode = "video"
-        return path
-
-    def stop_video(self):
-        self.stop_all()
-        self.start_still_mode()
 
     def close(self):
         try:
@@ -870,7 +840,6 @@ class DemoCamera:
     def __init__(self, index=0, stream=None):
         self.stream = stream or StreamingOutput()
         self.applied = {}
-        self.recording_path = None
         self.closed = False
         threading.Thread(target=self._frames, daemon=True).start()
 
@@ -888,8 +857,6 @@ class DemoCamera:
             draw.line((i, h - h // 8, i + w // 128, h), fill=(90, 90, 90))
         draw.text((10, 10), f"DEMO {datetime.now():%H:%M:%S}", fill=(255, 255, 255))
         draw.text((10, 26), json.dumps(jsonable(self.applied))[:120], fill=(180, 180, 180))
-        if self.recording_path:
-            draw.ellipse((w - 30, 10, w - 10, 30), fill=(220, 0, 0))
         return img
 
     def _frames(self):
@@ -932,14 +899,6 @@ class DemoCamera:
         self.applied.update({"AfMode": 0, "LensPosition": 5.0})
         return True, 5.0
 
-    def start_video(self, stem, directory):
-        self.recording_path = directory / f"{stem}.mp4"
-        self.recording_path.write_bytes(b"")  # placeholder, demo only
-        return self.recording_path
-
-    def stop_video(self):
-        self.recording_path = None
-
     def close(self):
         self.closed = True
 
@@ -948,8 +907,7 @@ class USBCamera:
     """UVC webcam through Picamera2/libcamera: a single stream, no ISP tricks.
 
     MJPEG webcams send finished JPEG frames: the preview passes them straight to the
-    browser and video copies them into a file with ffmpeg, so a Pi 3B does no
-    encoding at all. YUYV-only webcams work for preview and photos (no video)."""
+    browser, so a Pi 3B does no encoding at all. YUYV-only webcams are converted."""
 
     demo = False
     bgr_arrays = False
@@ -974,7 +932,6 @@ class USBCamera:
         self._still_wanted = threading.Event()
         self._still = None
         self._still_ready = threading.Event()
-        self._recorder = None
         self._closed = False
         threading.Thread(target=self._loop, daemon=True, name="usb-camera").start()
         log.info("USB camera %s: %s %sx%s", self.model, self.format, *self.size)
@@ -1038,13 +995,6 @@ class USBCamera:
                     self._still = (self._decode(req), req.get_metadata())
                     self._still_wanted.clear()
                     self._still_ready.set()
-                rec = self._recorder
-                if rec and self.format == "MJPEG":
-                    try:
-                        rec.stdin.write(req.make_buffer("main").tobytes())
-                    except (BrokenPipeError, OSError):
-                        log.warning("USB video: ffmpeg stopped")
-                        self._recorder = None
                 now = time.time()
                 if now - last_preview >= 1 / self.PREVIEW_FPS:
                     last_preview = now
@@ -1092,31 +1042,9 @@ class USBCamera:
     def autofocus(self):
         return False, None
 
-    def start_video(self, stem, directory):
-        if self.format != "MJPEG":
-            raise RuntimeError("video needs a webcam with MJPEG output")
-        ffmpeg = shutil.which("ffmpeg")
-        if not ffmpeg:
-            raise RuntimeError("video from a USB camera needs ffmpeg (sudo apt install ffmpeg)")
-        path = directory / f"{stem}.avi"
-        # -c copy: the webcam's JPEG frames go into the file untouched (no CPU cost).
-        self._recorder = subprocess.Popen(
-            [ffmpeg, "-loglevel", "error", "-f", "mjpeg", "-framerate", "30", "-i", "-", "-c", "copy", str(path)],
-            stdin=subprocess.PIPE)
-        self.mode = "video"
-        return path
-
-    def stop_video(self):
-        rec, self._recorder = self._recorder, None
-        if rec:
-            rec.stdin.close()
-            rec.wait(timeout=30)
-        self.mode = "usb"
-
     def close(self):
         self._closed = True
         try:
-            self.stop_video()
             self.picam2.stop()
             self.picam2.close()
         except Exception:
@@ -1163,8 +1091,6 @@ class NoCamera(DemoCamera):
     def capture_main_array(self):
         raise RuntimeError(f"no camera: {self.error}")
 
-    def start_video(self, stem, directory):
-        raise RuntimeError(f"no camera: {self.error}")
 
 
 def save_image(image, path):
@@ -1177,6 +1103,13 @@ def save_image(image, path):
         image.convert("RGB").save(tmp, "JPEG", quality=int(CONFIG.get("jpeg_quality", 95)), subsampling=0)
     else:
         image.save(tmp, "TIFF")  # uncompressed: the fastest lossless option on a slow Pi
+    os.replace(tmp, path)
+
+
+def write_json_atomic(path, data):
+    """Temp file + rename: a power cut never leaves a half-written file behind."""
+    tmp = path.with_name(f".{path.name}.part")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -1288,6 +1221,11 @@ class Compressor:
             self.add(f, f.with_suffix(target), after=after)
         return len(frames)
 
+    def converting(self, stack_name):
+        """True while a frame of this stack is being converted right now."""
+        with self.lock:
+            return any(Path(r).parent.name == stack_name for r in self.busy)
+
     def pending_for(self, after):
         with self.lock:
             return sum(1 for i in self.items if i.get("after") == list(after))
@@ -1304,8 +1242,9 @@ class Compressor:
 
     def _worker(self):
         while True:
-            # focus-stack needs all the RAM it can get (1 GB on a Pi 3B): pause meanwhile.
-            while focus_stack_running():
+            # focus-stack needs all the RAM it can get (1 GB on a Pi 3B), and a move
+            # copies these very files: pause meanwhile.
+            while focus_stack_running() or move_running():
                 time.sleep(3)
             with self.lock:
                 while not (item := next((i for i in self.items if i["raw"] not in self.busy), None)):
@@ -1336,12 +1275,18 @@ class Compressor:
                 if item in self.items:
                     self.items.remove(item)
                 self.busy.discard(item["raw"])
-                self._persist()
                 after = item.get("after")
                 group_done = bool(after) and not any(i.get("after") == after for i in self.items)
+                try:
+                    self._persist()
+                except OSError as exc:  # e.g. disk full: keep working, the list is in memory
+                    log.warning("Could not save the compression list: %s", exc)
             if group_done:
                 log.info("all frames of %s %s compressed — starting its uploads", *after)
-                auto_upload(*after)
+                try:
+                    auto_upload(*after)
+                except Exception:
+                    log.exception("Starting the uploads of %s %s failed", *after)
 
     def status(self):
         with self.lock:
@@ -1354,15 +1299,37 @@ def focus_stack_running():
 
 
 def stack_busy(name):
-    """A stack that is still being captured, processed or uploaded must keep its raw frames."""
-    if active_stack and active_stack["name"] == name:
-        return True
-    job = latest_job("focus-stack", name)
-    if job and job["status"] in ("queued", "running"):
-        return True
+    """A stack that is still being captured, processed or uploaded must keep its raw frames
+    (the compressor's own check — compression itself is not counted here)."""
+    return bool(stack_task(name, include_compression=False))
+
+
+def stack_upload_running(name):
     with jobs_lock:
         return any(j["kind"] == "upload" and j["name"] == f"stack:{name}" and j["status"] == "running"
                    for j in jobs.values())
+
+
+def move_running():
+    with jobs_lock:
+        return any(j["kind"] == "move" and j["status"] in ("queued", "running") for j in jobs.values())
+
+
+def stack_task(name, include_compression=True):
+    """What is working on a stack right now, as text, or None. Only one task may touch a
+    stack at a time: capturing, processing, compressing its frames, uploading, moving."""
+    if active_stack and active_stack["name"] == name:
+        return "it is still being captured"
+    job = latest_job("focus-stack", name)
+    if job and job["status"] in ("queued", "running"):
+        return "it is being processed" if job["status"] == "running" else "it is queued for processing"
+    if stack_upload_running(name):
+        return "it is being uploaded"
+    if move_running():
+        return "files are being moved to the other disk"
+    if include_compression and compressor is not None and compressor.converting(name):
+        return "its frames are being compressed"
+    return None
 
 
 COMPRESS_SCRIPT = BASE_DIR / "scripts" / "compress-image.py"
@@ -1480,7 +1447,6 @@ def restore_controls(cam):
 
 
 camera = None  # set in main()
-recording = {"active": False, "path": None, "started": None}
 active_stack = None  # {"name", "dir", "count"} while collecting frames
 state_lock = threading.Lock()
 
@@ -1502,7 +1468,7 @@ jobs_lock = threading.Lock()
 stack_queue = None  # focus-stack jobs (queue.Queue), worked off by _stack_worker; set in main()
 upload_queue = None  # upload jobs, one at a time (Wi-Fi and USB are shared); set in main()
 last_capture = {"t": 0.0}  # time of the last photo, to keep uploads out of the way
-activity = {"t": time.time()}  # last capture / stack / focus check / video: "idle" is measured from here
+activity = {"t": time.time()}  # last capture / stack / focus check: "idle" is measured from here
 stack_order = []  # ids of focus-stack jobs still waiting, in queue order (guarded by jobs_lock)
 
 
@@ -1552,9 +1518,10 @@ def _stack_worker():
         noted = False
         # Idle mode: shooting again pauses the queue; the stack already running finishes.
         # A Process button press ("now") is not held back.
-        while processing_mode() == "idle" and foreground_busy() and not job.get("cancel") and not job.get("now"):
+        while not job.get("cancel") and (move_running() or (
+                processing_mode() == "idle" and foreground_busy() and not job.get("now"))):
             if not noted:
-                job_log(job, "Waiting until you stop shooting…")
+                job_log(job, "Waiting until files are moved" if move_running() else "Waiting until you stop shooting…")
                 noted = True
             time.sleep(3)
         with jobs_lock:
@@ -1597,7 +1564,7 @@ def idle_processor():
 
 
 def idle_check():
-    if processing_mode() != "idle" or active_stack or recording["active"]:
+    if processing_mode() != "idle" or active_stack or move_running():
         return []
     minutes = float(CONFIG.get("processing", {}).get("idle_minutes", 5))
     if idle_for() < minutes * 60:
@@ -1615,7 +1582,7 @@ def idle_check():
 def foreground_busy():
     """The user is shooting: keep uploads off the Wi-Fi and USB bus meanwhile."""
     now = time.time()
-    return bool(active_stack or recording["active"] or (camera is not None and getattr(camera, "hold_full", False))
+    return bool(active_stack or (camera is not None and getattr(camera, "hold_full", False))
                 or now - last_capture["t"] < 20 or now - focus_hold["last"] < 20)
 
 
@@ -1624,9 +1591,11 @@ def _upload_worker():
     while True:
         job, runner = upload_queue.get()
         noted = False
-        while foreground_busy() or focus_stack_running():
+        stack = job["name"][len("stack:"):] if job["name"].startswith("stack:") else None
+        while foreground_busy() or focus_stack_running() or move_running() or (
+                stack and compressor.converting(stack)):
             if not noted:
-                job_log(job, "Waiting until capturing and stacking are done…")
+                job_log(job, "Waiting until capturing, stacking and compressing are done…")
                 noted = True
             time.sleep(3)
         runner()
@@ -1811,6 +1780,8 @@ def run_stacker(job, cmd, stack_dir):
     proc = subprocess.Popen(cmd, cwd=stack_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, bufsize=1, preexec_fn=nice)
     job["pid"] = proc.pid
+    if job.get("cancel"):  # cancelled while it was starting
+        proc.terminate()
     for line in proc.stdout:
         job_log(job, line)
     return proc.wait()
@@ -1822,6 +1793,15 @@ def run_focus_stack(job, name, overrides):
     if waiting:
         job_log(job, f"Waiting for {waiting} frame(s) to be written…")
     save_queue.wait_idle()
+    # A frame being compressed or the stack being uploaded: wait, never read half a set.
+    noted = False
+    while not job.get("cancel") and (compressor.converting(name) or stack_upload_running(name) or move_running()):
+        if not noted:
+            job_log(job, "Waiting until the other task on this stack has finished…")
+            noted = True
+        time.sleep(2)
+    if job.get("cancel"):
+        raise RuntimeError("cancelled")
     frames = stack_frames(stack_dir, name)
     if len(frames) < 2:
         raise RuntimeError(f"Need at least 2 frames, found {len(frames)}")
@@ -1898,8 +1878,6 @@ def upload_sources(kind, name):
         path = safe_child(data_dir("photos"), name)
         sidecar = path.with_suffix(".json")
         return [path] + ([sidecar] if sidecar.exists() else []), "photos"
-    if kind == "video":
-        return [safe_child(data_dir("videos"), name)], "videos"
     if kind == "stack":
         stack_dir = safe_child(data_dir("stacks"), name)
         if CONFIG["upload"].get("stack_frames", False):
@@ -2073,8 +2051,8 @@ def unlock_exposure(state):
 def run_sweep(job, name, positions, settle_ms, process):
     """Capture one stack frame per lens position, then optionally process it."""
     global active_stack
-    stack_dir = data_dir("stacks") / name
     try:
+        stack_dir = data_dir("stacks") / name
         with camera_lock:
             camera.set_controls({"AfMode": 0})
             # Full sensor mode for the whole sweep: no camera restart between frames.
@@ -2151,7 +2129,7 @@ def stream():
                     headers={"Cache-Control": "no-cache, private", "Pragma": "no-cache"})
 
 
-MEDIA_KINDS = {"photos": "photos", "stacks": "stacks", "videos": "videos"}
+MEDIA_KINDS = {"photos": "photos", "stacks": "stacks"}
 
 
 @app.route("/media/<kind>/<path:relpath>")
@@ -2190,12 +2168,24 @@ def download_stack(name):
                 stale.unlink()
             except OSError:
                 pass
+    files = [f for f in sorted(stack_dir.iterdir()) if f.is_file()]
+    need = sum(f.stat().st_size for f in files)
+    usage = shutil.disk_usage(tmp_dir)
+    if usage.free < need + 200 * 2**20 or (usage.total - usage.free + need) * 100 / usage.total > 95:
+        return jsonify(ok=False, error=f"not enough free space to build the zip ({need / 2**30:.1f} GB) — "
+                                       "download the result or the frames one by one"), 507
     tmp = tempfile.NamedTemporaryFile(prefix="stack_", suffix=".zip", delete=False, dir=tmp_dir)
     tmp.close()
-    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_STORED) as zf:
-        for f in sorted(stack_dir.iterdir()):
-            if f.is_file():
-                zf.write(f, f"{name}/{f.name}")
+    try:
+        with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_STORED) as zf:
+            for f in files:
+                if f.exists():  # a TIFF may have just been compressed to PNG
+                    zf.write(f, f"{name}/{f.name}")
+                elif f.with_suffix(".png").exists():
+                    zf.write(f.with_suffix(".png"), f"{name}/{f.with_suffix('.png').name}")
+    except Exception:
+        os.unlink(tmp.name)
+        raise
     response = send_file(tmp.name, as_attachment=True, download_name=f"{name}.zip")
     def cleanup():
         try:
@@ -2219,14 +2209,20 @@ def thumb(kind, relpath):
     large = request.args.get("size") == "large"
     box = (2048, 1536) if large else (480, 360)
     cache = base / ".thumbs" / (relpath.replace("/", "__") + (".large.jpg" if large else ".jpg"))
-    if not cache.exists() or cache.stat().st_mtime < src.stat().st_mtime:
-        from PIL import Image
-        cache.parent.mkdir(exist_ok=True)
-        with Image.open(src) as img:
-            img.draft("RGB", box)
-            img = img.convert("RGB")
-            img.thumbnail(box)
-            img.save(cache, "JPEG", quality=88 if large else 80)
+    try:
+        if not cache.exists() or cache.stat().st_mtime < src.stat().st_mtime:
+            from PIL import Image
+            cache.parent.mkdir(exist_ok=True)
+            with Image.open(src) as img:
+                img.draft("RGB", box)
+                img = img.convert("RGB")
+                img.thumbnail(box)
+                # Temp + rename: a second request never gets a half-written JPEG.
+                tmp = cache.with_name(f".{cache.name}.{threading.get_ident()}.part")
+                img.save(tmp, "JPEG", quality=88 if large else 80)
+                os.replace(tmp, cache)
+    except FileNotFoundError:  # e.g. a TIFF that was just compressed to PNG
+        abort(404)
     return send_file(cache, max_age=3600)
 
 
@@ -2340,7 +2336,6 @@ def api_camera_info():
         lens_range=jsonable(camera.camera_controls.get("LensPosition")),
         drive=drive_available(),
         nas=nas_available(),
-        ffmpeg=bool(shutil.which("ffmpeg")),
     )
 
 
@@ -2351,8 +2346,8 @@ def api_cameras():
     if request.method == "POST":
         index = int((request.get_json(force=True) or {}).get("index", 0))
         with state_lock:
-            if recording["active"] or active_stack:
-                return jsonify(ok=False, error="stop recording / finish the stack first"), 409
+            if active_stack:
+                return jsonify(ok=False, error="finish the stack first"), 409
         if index >= len(list_cameras()):
             return jsonify(ok=False, error=f"no camera {index}"), 400
         with camera_lock:
@@ -2541,8 +2536,7 @@ def api_status():
     with state_lock:
         stack = ({**active_stack, "dir": None, "exposure_lock": bool(active_stack.get("exposure_lock"))}
                  if active_stack else None)
-        rec = dict(recording, path=recording["path"] and Path(recording["path"]).name)
-    return jsonify(recording=rec, stack=stack, next_seq=CONFIG.get("next_seq", 1),
+    return jsonify(stack=stack, next_seq=CONFIG.get("next_seq", 1),
                    saving=save_queue.status(), compressing=compressor.status(),
                    storage={"target": storage_target(),
                             "available": storage_target() != "usb" or os.path.ismount(USB_MOUNT),
@@ -2620,8 +2614,6 @@ def api_focus_check():
     import numpy as np
     from PIL import Image
 
-    if recording["active"]:
-        return jsonify(error="not available while recording"), 409
     x = min(max(float(request.args.get("x", 0.5)), 0.0), 1.0)
     y = min(max(float(request.args.get("y", 0.5)), 0.0), 1.0)
     size = int(request.args.get("size", 600))
@@ -2670,7 +2662,7 @@ def api_focus_check_stop():
 
 
 def release_focus_hold():
-    if camera.hold_full and not recording["active"]:
+    if camera.hold_full:
         with camera_lock:
             camera.set_hold_full(False)
 
@@ -2687,8 +2679,6 @@ def focus_hold_watchdog():
 
 @app.route("/api/capture", methods=["POST"])
 def api_capture():
-    if recording["active"]:
-        return jsonify(ok=False, error="recording in progress"), 409
     check_space()
     last_capture["t"] = time.time()
     note_activity()
@@ -2712,8 +2702,6 @@ def api_capture():
 @app.route("/api/exposure_check", methods=["POST"])
 def api_exposure_check():
     """Take a full-resolution frame (not saved) and judge its exposure before shooting."""
-    if recording["active"]:
-        return jsonify(ok=False, error="recording in progress"), 409
     note_activity()
     with camera_lock:
         image, metadata = camera.grab()
@@ -2721,69 +2709,6 @@ def api_exposure_check():
     report = exposure_report(image, metadata)
     limited = exposure_limited(camera.applied, metadata)
     return jsonify(ok=True, gain=metadata.get("AnalogueGain"), limited=limited, **report)
-
-
-@app.route("/api/video/start", methods=["POST"])
-def api_video_start():
-    label = (request.get_json(silent=True) or {}).get("label", "")
-    with state_lock:
-        if recording["active"]:
-            return jsonify(ok=False, error="already recording"), 409
-        if active_stack:
-            return jsonify(ok=False, error="finish the stack first"), 409
-        check_space()
-        note_activity()
-        recording["active"] = True
-    directory = data_dir("videos")
-    stem = unique_stem(directory, build_basename(label), ".mp4")
-    try:
-        with camera_lock:
-            path = camera.start_video(stem, directory)
-    except Exception as exc:
-        log.exception("Starting video failed")
-        with camera_lock:
-            try:
-                camera.stop_video()
-            except Exception:
-                log.exception("Restoring still mode failed")
-        recording["active"] = False
-        return jsonify(ok=False, error=str(exc)), 500
-    recording.update(path=str(path), started=time.time())
-    return jsonify(ok=True, file=path.name)
-
-
-@app.route("/api/video/stop", methods=["POST"])
-def api_video_stop():
-    if not recording["active"]:
-        return jsonify(ok=False, error="not recording"), 409
-    path, duration, uploads = stop_recording()
-    note_activity()
-    return jsonify(ok=True, file=path.name if path else None, seconds=round(duration, 1), uploads=uploads)
-
-
-def stop_recording():
-    with camera_lock:
-        camera.stop_video()
-    path = Path(recording["path"]) if recording["path"] else None
-    duration = time.time() - (recording["started"] or time.time())
-    recording.update(active=False, path=None, started=None)
-    uploads = auto_upload("video", path.name) if path and path.exists() and not camera.demo else []
-    return path, duration, uploads
-
-
-def space_watchdog():
-    """A running video is the one capture that keeps growing: stop it 10 points past the limit."""
-    while True:
-        time.sleep(10)
-        if not recording["active"]:
-            continue
-        try:
-            pct = storage_used_pct()
-            if pct >= min(storage_limit_pct() + 10, 97):
-                log.warning("Disk %.0f%% full — stopping the video", pct)
-                stop_recording()
-        except Exception:
-            log.exception("Disk space check during recording failed")
 
 
 # --------------------------------------------------------------------------
@@ -2797,8 +2722,6 @@ def api_stack_start():
     with state_lock:
         if active_stack:
             return jsonify(ok=False, error=f"stack {active_stack['name']} still open"), 409
-        if recording["active"]:
-            return jsonify(ok=False, error="recording in progress"), 409
         check_space()
         note_activity()
         base = data_dir("stacks")
@@ -2806,7 +2729,7 @@ def api_stack_start():
         stack_dir = base / name
         stack_dir.mkdir()
         meta = {"name": name, "label": label, "created": datetime.now().isoformat(timespec="seconds")}
-        (stack_dir / "stack.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        write_json_atomic(stack_dir / "stack.json", meta)
         active_stack = {"name": name, "dir": str(stack_dir), "count": 0}
     active_stack["exposure_lock"] = lock_exposure_for_stack()
     return jsonify(ok=True, name=name, exposure_locked=bool(active_stack["exposure_lock"]))
@@ -2830,7 +2753,8 @@ def api_stack_frame():
             image, metadata = camera.grab()
     except Exception:
         with state_lock:
-            active_stack["count"] -= 1
+            if active_stack and active_stack["name"] == name:
+                active_stack["count"] -= 1
         raise
     grabbed = time.time() - started
     image, box = apply_crop(image)
@@ -2847,7 +2771,10 @@ def api_stack_end():
         if not active_stack:
             return jsonify(ok=False, error="no stack open"), 409
         if active_stack.get("sweep"):
-            return jsonify(ok=False, error="a lens sweep is running — cancel it instead"), 409
+            sweep_job = jobs.get(active_stack.get("job"))
+            if sweep_job and sweep_job["status"] in ("queued", "running"):
+                return jsonify(ok=False, error="a lens sweep is running — cancel it instead"), 409
+            # A sweep whose job is gone or failed would block everything: close it.
         finished, active_stack = active_stack, None
     unlock_exposure(finished.get("exposure_lock"))
     note_activity()
@@ -2892,19 +2819,24 @@ def api_stack_sweep():
     with state_lock:
         if active_stack:
             return jsonify(ok=False, error=f"stack {active_stack['name']} still open"), 409
-        if recording["active"]:
-            return jsonify(ok=False, error="recording in progress"), 409
         base = data_dir("stacks")
         name = unique_stem(base, build_basename(label), "")
         (base / name).mkdir()
         meta = {"name": name, "label": label, "created": datetime.now().isoformat(timespec="seconds"),
                 "sweep": {"start": start, "end": end, "steps": steps, "settle_ms": settle}}
-        (base / name / "stack.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        active_stack = {"name": name, "dir": str(base / name), "count": 0, "sweep": True, "total": steps}
-    active_stack["exposure_lock"] = lock_exposure_for_stack()
-    job = start_job("sweep", name, run_sweep, name, sweep_positions(start, end, steps), settle,
-                    processing_mode() == "immediate")
-    active_stack["job"] = job["id"]
+        write_json_atomic(base / name / "stack.json", meta)
+        stack = active_stack = {"name": name, "dir": str(base / name), "count": 0, "sweep": True, "total": steps}
+    try:
+        stack["exposure_lock"] = lock_exposure_for_stack()
+        job = start_job("sweep", name, run_sweep, name, sweep_positions(start, end, steps), settle,
+                        processing_mode() == "immediate")
+    except Exception:
+        with state_lock:
+            if active_stack is stack:
+                active_stack = None
+        unlock_exposure(stack.get("exposure_lock"))
+        raise
+    stack["job"] = job["id"]  # the local dict: the sweep may already have finished
     return jsonify(ok=True, name=name, job=job["id"])
 
 
@@ -2935,6 +2867,9 @@ def api_stack_process(name):
     running = latest_job("focus-stack", name)
     if running and running["status"] in ("queued", "running"):
         return jsonify(ok=False, error="already processing", job=running["id"]), 409
+    busy = stack_task(name)
+    if busy:
+        return jsonify(ok=False, error=f"not now — {busy}"), 409
     overrides = (request.get_json(silent=True) or {}).get("options") or {}
     unknown = set(overrides) - set(CONFIG["focus_stack"])
     if unknown:
@@ -3021,15 +2956,25 @@ def api_stacks():
                     key=lambda p: p.stat().st_mtime, reverse=True):
         frames = stack_frames(d, d.name)
         job = latest_job("focus-stack", d.name)
-        meta_file = d / "stack.json"
-        meta = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
+        meta_file, problem = d / "stack.json", None
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
+        except (OSError, ValueError):
+            meta, problem = {}, "its stack.json is damaged (the frames are fine)"
+        outputs = stack_outputs(d, d.name)
+        is_open = bool(active_stack and active_stack["name"] == d.name)
+        busy = job and job["status"] in ("queued", "running")
+        dead = None
+        if not is_open and not busy and "result" not in outputs and len(frames) < 2:
+            dead = f"it has {len(frames)} frame{'' if len(frames) == 1 else 's'} and no result — nothing to stack"
         stacks.append({
+            "problem": problem, "dead": dead,
             "name": d.name,
             "label": meta.get("label", ""),
             "created": meta.get("created"),
             "frames": [f.name for f in frames],
-            "outputs": stack_outputs(d, d.name),
-            "open": bool(active_stack and active_stack["name"] == d.name),
+            "outputs": outputs,
+            "open": is_open,
             "job": job and {**{k: job[k] for k in ("id", "status", "error")},
                             "position": stack_queue_position(job["id"])},
         })
@@ -3050,11 +2995,6 @@ def api_photos():
     return jsonify(photos=list_files("photos", IMAGE_EXTS))
 
 
-@app.route("/api/videos")
-def api_videos():
-    return jsonify(videos=list_files("videos", VIDEO_EXTS))
-
-
 def drop_thumb(kind, relpath):
     stem = relpath.replace("/", "__")
     for suffix in (".jpg", ".large.jpg"):
@@ -3063,13 +3003,13 @@ def drop_thumb(kind, relpath):
 
 @app.route("/api/delete", methods=["POST"])
 def api_bulk_delete():
-    """Delete several photos / videos / stacks at once: {"photos": [...], "videos": [...],
-    "stacks": [...]}. Each item goes through the normal single-delete checks; items that
-    cannot be deleted (open or processing stack, recording video) are reported, not fatal."""
+    """Delete several photos / stacks at once: {"photos": [...], "stacks": [...]}. Each
+    item goes through the normal single-delete checks; items that cannot be deleted
+    (open or busy stack) are reported, not fatal."""
     from werkzeug.exceptions import HTTPException
 
     body = request.get_json(force=True) or {}
-    handlers = {"photos": api_photo_delete, "videos": api_video_delete, "stacks": api_stack_delete}
+    handlers = {"photos": api_photo_delete, "stacks": api_stack_delete}
     deleted, failed = [], []
     for kind, handler in handlers.items():
         for name in body.get(kind) or []:
@@ -3100,24 +3040,12 @@ def api_photo_delete(name):
     return jsonify(ok=True)
 
 
-@app.route("/api/videos/<name>", methods=["DELETE"])
-def api_video_delete(name):
-    if recording["active"] and recording["path"] and Path(recording["path"]).name == name:
-        return jsonify(ok=False, error="video is still recording"), 409
-    path = safe_child(data_dir("videos"), name)
-    if not path.is_file():
-        abort(404)
-    path.unlink()
-    return jsonify(ok=True)
-
 
 @app.route("/api/stacks/<name>", methods=["DELETE"])
 def api_stack_delete(name):
-    if active_stack and active_stack["name"] == name:
-        return jsonify(ok=False, error="stack is still open"), 409
-    job = latest_job("focus-stack", name)
-    if job and job["status"] in ("queued", "running"):
-        return jsonify(ok=False, error="stack is being processed"), 409
+    busy = stack_task(name)
+    if busy:
+        return jsonify(ok=False, error=f"not now — {busy}"), 409
     stack_dir = safe_child(data_dir("stacks"), name)
     if not stack_dir.is_dir():
         abort(404)
@@ -3131,11 +3059,9 @@ def api_stack_delete(name):
 def api_stack_frames_delete(name):
     """Drop the source frames of a processed stack, keeping the result."""
     stack_dir = safe_child(data_dir("stacks"), name)
-    if active_stack and active_stack["name"] == name:
-        return jsonify(ok=False, error="stack is still open"), 409
-    job = latest_job("focus-stack", name)
-    if job and job["status"] in ("queued", "running"):
-        return jsonify(ok=False, error="stack is being processed"), 409
+    busy = stack_task(name)
+    if busy:
+        return jsonify(ok=False, error=f"not now — {busy}"), 409
     if "result" not in stack_outputs(stack_dir, name):
         return jsonify(ok=False, error="stack has no result yet — frames kept"), 409
     return jsonify(ok=True, deleted=delete_stack_frames(stack_dir, name))
@@ -3144,8 +3070,9 @@ def api_stack_frames_delete(name):
 @app.route("/api/stacks/<name>/<filename>", methods=["DELETE"])
 def api_stack_file_delete(name, filename):
     """Delete a single frame (or result) from a stack."""
-    if active_stack and active_stack["name"] == name:
-        return jsonify(ok=False, error="stack is still open"), 409
+    busy = stack_task(name)
+    if busy:
+        return jsonify(ok=False, error=f"not now — {busy}"), 409
     path = safe_child(safe_child(data_dir("stacks"), name), filename)
     if not path.is_file() or path.name == "stack.json":
         abort(404)
@@ -3160,8 +3087,8 @@ def api_stack_file_delete(name, filename):
 def api_upload():
     body = request.get_json(force=True) or {}
     dest, kind, name = body.get("dest"), body.get("kind"), body.get("name", "")
-    if dest not in ("drive", "nas") or kind not in ("photo", "stack", "video") or not name:
-        return jsonify(ok=False, error="need dest (drive/nas), kind (photo/stack/video) and name"), 400
+    if dest not in ("drive", "nas") or kind not in ("photo", "stack") or not name:
+        return jsonify(ok=False, error="need dest (drive/nas), kind (photo/stack) and name"), 400
     job = start_job("upload", f"{kind}:{name}", run_upload, dest, kind, name)
     return jsonify(ok=True, job=job["id"])
 
@@ -3172,7 +3099,7 @@ def api_upload():
 
 EDITABLE_SETTINGS = {"filename_pattern", "image_format", "jpeg_quality", "png_compress_level",
                      "save_metadata", "persist_controls", "next_seq", "focus_stack", "upload",
-                     "video", "camera", "sweep", "ui", "crop", "processing"}
+                     "camera", "sweep", "ui", "crop", "processing"}
 
 
 @app.route("/api/settings", methods=["GET", "POST"])
@@ -3195,7 +3122,7 @@ def api_settings():
         if "filename_pattern" in body:
             try:
                 format_name(body["filename_pattern"], "label", 1)
-            except (KeyError, ValueError, IndexError, AttributeError) as exc:
+            except (KeyError, ValueError, IndexError, AttributeError, TypeError) as exc:
                 return jsonify(ok=False, error=f"invalid filename pattern: {exc!r}"), 400
         with config_lock:
             for key, value in body.items():
@@ -3469,7 +3396,7 @@ def disk_free(path):
 
 
 def data_size(root_for_kind):
-    """(files, bytes) of the photo/stack/video folders; root_for_kind(kind) -> Path."""
+    """(files, bytes) of the photo and stack folders; root_for_kind(kind) -> Path."""
     files = size = 0
     for kind in DATA_KINDS:
         base = root_for_kind(kind)
@@ -3484,14 +3411,16 @@ def data_size(root_for_kind):
 
 def storage_busy():
     with state_lock:
-        if recording["active"] or active_stack:
-            return "stop recording / finish the stack first"
+        if active_stack:
+            return "finish the stack first"
     if save_queue.status()["pending"]:
         return "wait until the last captures are written"
     with jobs_lock:
-        if any(j["status"] in ("queued", "running") and j["kind"] in ("focus-stack", "move")
+        if any(j["status"] in ("queued", "running") and j["kind"] in ("focus-stack", "move", "upload", "sweep")
                for j in jobs.values()):
-            return "wait until stack processing / moving has finished"
+            return "wait until stacking, uploads and moving have finished"
+    if compressor.status()["active"]:
+        return "wait until compression has finished"
     return None
 
 
@@ -3567,7 +3496,7 @@ def api_storage_eject():
 
 
 def run_move_data(job, direction):
-    """Move photos/stacks/videos between the SD card and the USB disk (copy, verify, delete)."""
+    """Move photos and stacks between the SD card and the USB disk (copy, verify, delete)."""
     usb_base = usb_root()
     src_of = sd_dir if direction == "to_usb" else (lambda k: usb_base / k)
     dst_of = (lambda k: usb_base / k) if direction == "to_usb" else sd_dir
@@ -3787,7 +3716,7 @@ def download_debug_log():
     except Exception as exc:
         section("System", f"unavailable: {exc}")
     with state_lock:
-        state = {"recording": dict(recording), "stack": active_stack and {**active_stack, "exposure_lock": None}}
+        state = {"stack": active_stack and {**active_stack, "exposure_lock": None}}
     section("State", json.dumps(jsonable({**state, "saving": save_queue.status(),
                                             "compressing": compressor.status(),
                                             "camera_mode": getattr(camera, "mode", None),
@@ -3819,8 +3748,6 @@ def download_debug_log():
 
 def power_blocker():
     with state_lock:
-        if recording["active"]:
-            return "a video is recording — stop it first"
         if active_stack:
             return "a stack is open — finish it first"
     return None
@@ -3935,8 +3862,8 @@ def run_self_update(job):
 
 @app.route("/api/update/apply", methods=["POST"])
 def api_update_apply():
-    if recording["active"] or active_stack:
-        return jsonify(ok=False, error="stop recording / finish the stack first"), 409
+    if active_stack:
+        return jsonify(ok=False, error="finish the stack first"), 409
     with jobs_lock:
         busy = [j for j in jobs.values() if j["status"] in ("queued", "running")]
     if busy:
@@ -3979,7 +3906,6 @@ def main():
     threading.Thread(target=_stack_worker, daemon=True, name="focus-stack-queue").start()
     upload_queue = queue.Queue()
     threading.Thread(target=_upload_worker, daemon=True, name="upload-queue").start()
-    threading.Thread(target=space_watchdog, daemon=True, name="space-watchdog").start()
     threading.Thread(target=idle_processor, daemon=True, name="idle-processor").start()
     if os.name != "nt":  # the Pi; a dev checkout on Windows needs no banner
         threading.Thread(target=update_checker, daemon=True, name="update-checker").start()

@@ -72,7 +72,6 @@ function renderBadges() {
     info.drive ? (settings.upload?.auto_drive ? "Drive auto-upload" : "Drive ✓") : "No Drive"));
   if (info.nas) b.append(el("span", { class: "badge ok" }, "NAS ✓"));
   if (info.has_autofocus) b.append(el("span", { class: "badge" }, "AF"));
-  if (status.recording?.active) b.append(el("span", { class: "badge rec" }, "● REC"));
   // Background work at a glance (details in the tooltip and the Jobs tab).
   const bg = status.background || {};
   const work = [["stacking", bg.stacking], ["writing", bg.saving], ["compressing", bg.compressing],
@@ -108,7 +107,7 @@ function renderBadges() {
       : el("span", { class: "badge warn", title: "Plug the disk back in, or switch to the SD card in Settings → Storage" }, "USB disk missing"));
   }
   // A camera that is detected but sends no frames (loose/damaged ribbon cable, "frontend timed out").
-  if (status.preview_stalled_s > 8 && !status.recording?.active) {
+  if (status.preview_stalled_s > 8) {
     b.append(el("span", { class: "badge warn", title: "Shut down, reseat the ribbon cable at both ends (contacts the right way round, latch closed), check it is not pinched, or try another cable." },
       `⚠ camera sends no image (${Math.round(status.preview_stalled_s)} s) — check the ribbon cable`));
   }
@@ -116,32 +115,41 @@ function renderBadges() {
   if (err) b.append(el("span", { class: "badge warn", title: err }, "save error"));
 }
 
+let statusInFlight = false;
 async function refreshStatus() {
-  try { status = await api("/api/status"); } catch (_) { return; }
+  if (statusInFlight) return;  // never more than one status request at a time
+  statusInFlight = true;
+  try { status = await api("/api/status"); } catch (_) { return; } finally { statusInFlight = false; }
+  applyStatus();
+}
+function applyStatus() {
   const stack = status.stack;
-  $("#btn-stack-start").disabled = !!stack || status.recording.active;
-  $("#btn-stack-frame").disabled = !stack || !!stack.sweep;
-  $("#btn-stack-end").disabled = !stack || !!stack.sweep;
+  if (stack?.sweep) showBusy(`Lens sweep: frame ${stack.count}/${stack.total}…`, "sweep");
+  else if (busyReasons.has("sweep")) hideBusy("sweep");
+  const busy = isBusy();  // a capture or sweep is running: everything stays disabled
+  $("#btn-photo").disabled = busy;
+  $("#btn-exposure-check").disabled = busy;
+  $("#btn-stack-start").disabled = busy || !!stack;
+  $("#btn-stack-frame").disabled = busy || !stack || !!stack.sweep;
+  $("#btn-stack-end").disabled = busy || !stack || !!stack.sweep;
   $("#btn-sweep-cancel").hidden = !(stack && stack.sweep);
-  $("#btn-photo").disabled = status.recording.active;
-  if (isBusy()) CAPTURE_BUTTONS.forEach((s) => { $(s).disabled = true; });  // a capture is running
   // Disk at its fill limit: no new captures (Finish and processing still work).
   const st = status.storage || {};
   const full = st.used_pct != null && st.used_pct >= st.limit_pct;
-  ["#btn-photo", "#btn-stack-start", "#btn-stack-frame", "#btn-video"].forEach((s) => {
-    if (full && !(s === "#btn-video" && status.recording.active)) $(s).disabled = true;
+  ["#btn-photo", "#btn-stack-start", "#btn-stack-frame", "#btn-exposure-check"].forEach((s) => {
+    if (full) $(s).disabled = true;
     $(s).title = full ? `Disk ${Math.round(st.used_pct)}% full — capturing is paused at ${st.limit_pct}%` : "";
   });
-  if (stack?.sweep) showBusy(`Lens sweep: frame ${stack.count}/${stack.total}…`, "sweep");
-  else hideBusy("sweep");
   $("#stack-status").textContent = stack
     ? `Stack ${stack.name}: ${stack.count}${stack.total ? "/" + stack.total : ""} frames${stack.sweep ? " (sweep running)" : ""}`
     : "";
-  const rec = status.recording;
-  $("#btn-video").textContent = rec.active ? "⏹ Stop video" : "⏺ Start video";
-  $("#video-timer").textContent = rec.active ? Math.round(Date.now() / 1000 - rec.started) + " s — " + rec.path : "";
   renderBadges();
 }
+// Status polling: every 1.5 s while the page is visible, every 15 s in a background tab.
+function scheduleStatus() {
+  setTimeout(async () => { await refreshStatus(); scheduleStatus(); }, document.hidden ? 15000 : 1500);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshStatus(); });
 
 // ---------------------------------------------------------------- capture
 function label() { return $("#label").value.trim(); }
@@ -158,7 +166,7 @@ function uploadNote(r) { return r.uploads && r.uploads.length ? " — will uploa
 
 // Full-screen overlay while the camera is busy, so nothing gets clicked twice.
 const busyReasons = new Set();
-const CAPTURE_BUTTONS = ["#btn-photo", "#btn-stack-frame", "#btn-stack-start", "#btn-stack-end", "#btn-video"];
+const CAPTURE_BUTTONS = ["#btn-photo", "#btn-exposure-check", "#btn-stack-frame", "#btn-stack-start", "#btn-stack-end"];
 function showBusy(text, reason = "capture") {
   busyReasons.add(reason);
   $("#busy-text").textContent = text;
@@ -170,7 +178,8 @@ function hideBusy(reason = "capture") {
   if (busyReasons.size) return;
   $("#busy-overlay").hidden = true;
   CAPTURE_BUTTONS.forEach((s) => { delete $(s).dataset.busy; });
-  refreshStatus();  // restores the right enabled/disabled state
+  if (status) applyStatus();  // restore the right enabled/disabled state right away
+  refreshStatus();
 }
 const isBusy = () => busyReasons.size > 0;
 
@@ -266,17 +275,6 @@ $("#btn-stack-end").addEventListener("click", () => guarded(async () => {
   refreshStatus();
 }));
 
-$("#btn-video").addEventListener("click", () => guarded(async () => {
-  if (status.recording?.active) {
-    const r = await api("/api/video/stop", "POST", {});
-    say(`Video saved: ${r.file} (${r.seconds}s)${uploadNote(r)}`);
-  } else {
-    const r = await api("/api/video/start", "POST", { label: label() });
-    say(`Recording started: ${r.file}`);
-  }
-  refreshStatus();
-}));
-
 // sweep
 function sweepBody() {
   return {
@@ -295,7 +293,8 @@ $("#btn-sweep-from").addEventListener("click", () => { if (lensNow !== null) $("
 $("#btn-sweep-to").addEventListener("click", () => { if (lensNow !== null) $("#sweep-end").value = lensNow.toFixed(2); });
 
 async function pollLens() {
-  if (!info.has_autofocus || document.hidden) return;
+  // Only while the sweep settings are on screen (Capture tab, sweep mode).
+  if (!info.has_autofocus || document.hidden || $("#tab-capture").hidden || $("#sweep-box").hidden) return;
   try {
     const r = await api("/api/controls");
     const lp = r.live.LensPosition ?? r.controls.find((c) => c.name === "LensPosition")?.value;
@@ -305,6 +304,7 @@ async function pollLens() {
 
 document.addEventListener("keydown", (e) => {
   if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
+  if (e.ctrlKey || e.metaKey || e.altKey || $("#viewer").open) return;  // Ctrl+P is print, not a photo
   if (e.code === "Space" && status.stack && !status.stack.sweep) { e.preventDefault(); stackFrame(); }
   else if (e.key === "p" || e.key === "P") { e.preventDefault(); $("#btn-photo").click(); }
 });
@@ -981,16 +981,14 @@ function loadCrop() {
 
 // ---------------------------------------------------------------- viewer
 const isTiff = (name) => /\.tiff?$/i.test(name);
-function openViewer(title, url, isVideo = false) {
+function openViewer(title, url) {
   $("#viewer-title").textContent = title;
   $("#viewer-download").href = url + (url.includes("?") ? "&" : "?") + "download=1";
   $("#viewer-download-png").hidden = !isTiff(title);
   $("#viewer-download-png").href = url + "?as=png";
   // Browsers cannot display TIFF: show a screen-sized JPEG preview instead.
   const shown = isTiff(title) ? url.replace("/media/", "/thumb/") + "?size=large" : url;
-  $("#viewer-body").replaceChildren(isVideo
-    ? el("video", { src: url, controls: true, autoplay: true })
-    : el("a", { href: shown, target: "_blank" }, el("img", { src: shown, alt: title })));
+  $("#viewer-body").replaceChildren(el("a", { href: shown, target: "_blank" }, el("img", { src: shown, alt: title })));
   $("#viewer").showModal();
 }
 $("#viewer-close").addEventListener("click", () => { $("#viewer").close(); $("#viewer-body").replaceChildren(); });
@@ -1014,7 +1012,7 @@ function deleteButton(url, what, after) {
 }
 
 // ---------------------------------------------------------------- multi-select (gallery & stacks)
-// selection keys look like "photos:name", "videos:name", "stacks:name"
+// selection keys look like "photos:name", "stacks:name"
 const selection = { gallery: new Set(), stacks: new Set() };
 const lastPicked = { gallery: null, stacks: null };
 
@@ -1070,25 +1068,24 @@ document.querySelectorAll(".selectbar").forEach((bar) => {
     keys.forEach((k) => { const kind = k.split(":")[0]; counts[kind] = (counts[kind] || 0) + 1; });
     const what = Object.entries(counts).map(([k, n]) => `${n} ${n === 1 ? k.replace(/s$/, "") : k}`).join(", ");
     if (!confirm(`Permanently delete ${what}?` + (group === "stacks" ? "\n\nThis removes each stack with all its frames and results." : ""))) return;
-    const body = { photos: [], videos: [], stacks: [] };
+    const body = { photos: [], stacks: [] };
     keys.forEach((k) => { const i = k.indexOf(":"); body[k.slice(0, i)].push(k.slice(i + 1)); });
     const r = await api("/api/delete", "POST", body);
     r.deleted.forEach((d) => selection[group].delete(`${d.kind}:${d.name}`));
     const msg = `Deleted ${r.deleted.length}` + (r.failed.length
       ? ` — ${r.failed.length} skipped: ${r.failed.map((f) => `${f.name} (${f.error})`).join("; ")}` : "");
     await reload();  // rebuilds the list (and the stacks message line) first
-    say(msg, r.failed.length > 0, group === "stacks" ? "#stacks-msg" : "#message");
-    if (group === "gallery") alert(msg);
-  }, group === "stacks" ? "#stacks-msg" : "#message"));
+    say(msg, r.failed.length > 0, group === "stacks" ? "#stacks-msg" : "#gallery-msg");
+  }, group === "stacks" ? "#stacks-msg" : "#gallery-msg"));
 });
 
 // ---------------------------------------------------------------- gallery
 async function loadGallery() {
-  const [p, v] = await Promise.all([api("/api/photos"), api("/api/videos")]);
+  const p = await api("/api/photos");
   const photos = $("#photos");
   photos.replaceChildren();
   photos.dataset.group = "gallery";
-  pruneSelection("gallery", new Set([...p.photos.map((f) => `photos:${f.name}`), ...v.videos.map((f) => `videos:${f.name}`)]));
+  pruneSelection("gallery", new Set(p.photos.map((f) => `photos:${f.name}`)));
   if (!p.photos.length) photos.append(el("p", { class: "muted" }, "No photos yet."));
   for (const f of p.photos) {
     const url = `/media/photos/${enc(f.name)}`;
@@ -1101,20 +1098,6 @@ async function loadGallery() {
         isTiff(f.name) ? el("a", { class: "button", href: url + "?as=png", title: "Compressed on the Pi first (~10-15 s on a Pi 3B)" }, "Download PNG") : null,
         uploadButtons("photo", f.name),
         deleteButton(`/api/photos/${enc(f.name)}`, f.name, loadGallery))));
-  }
-  const videos = $("#videos");
-  videos.replaceChildren();
-  videos.dataset.group = "gallery";
-  if (!v.videos.length) videos.append(el("p", { class: "muted" }, "No videos yet."));
-  for (const f of v.videos) {
-    const url = `/media/videos/${enc(f.name)}`;
-    videos.append(el("div", { class: "card row" },
-      pickBox("gallery", `videos:${f.name}`),
-      el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(f.name, url, true); } }, f.name),
-      el("span", { class: "muted small" }, `${f.modified.replace("T", " ")} · ${fmtBytes(f.size)}`),
-      el("a", { class: "button", href: url + "?download=1" }, "Download"),
-      uploadButtons("video", f.name),
-      deleteButton(`/api/videos/${enc(f.name)}`, f.name, loadGallery)));
   }
   updateSelectbar("gallery");
 }
@@ -1147,7 +1130,9 @@ function stackCard(s) {
         el("div", { class: "row" },
           s.outputs.result ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(s.outputs.result, base + enc(s.outputs.result)); } }, "result") : el("span", { class: "muted small" }, "not processed"),
           s.outputs.depthmap ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); openViewer(s.outputs.depthmap, base + enc(s.outputs.depthmap)); } }, "depth map") : null,
-          jobInfo, s.open ? el("span", { class: "badge", title: "Still taking frames — press Finish to close it" }, "open") : null))),
+          jobInfo, s.open ? el("span", { class: "badge", title: "Still taking frames — press Finish to close it" }, "open") : null),
+        s.dead ? el("div", { class: "error small" }, `This stack can't be processed: ${s.dead}. Delete it below.`) : null,
+        s.problem ? el("div", { class: "warn-text small" }, `Note: ${s.problem}.`) : null)),
     el("div", { class: "row" },
       processButton(s),
       s.outputs.result && s.frames.length && !s.open ? el("button", { onclick: () => guarded(async () => {
@@ -1170,6 +1155,7 @@ function processButton(s) {
     return el("button", { class: "primary", title: "Close this stack (same as Finish in the Capture tab)",
       onclick: () => { $("#btn-stack-end").click(); setTimeout(loadStacks, 1500); } }, "Finish stack");
   }
+  if (s.dead) return null;  // nothing to process: only Delete makes sense
   if (s.open || busy || s.frames.length < 2 || !info.focus_stack?.available) {
     return el("button", { class: "primary", disabled: true }, "Process stack");
   }
@@ -1367,7 +1353,7 @@ async function loadSettings() {
     for (const [key, meta] of Object.entries(fields)) fs.append(fieldFor(key, meta, values[key]));
     form.append(fs);
   }
-  form.append(el("p", { class: "muted small" }, `Example: ${r.example_name}. Preview/video resolution live in config.json (restart needed).`));
+  form.append(el("p", { class: "muted small" }, `Example: ${r.example_name}. The preview resolution lives in config.json (restart needed).`));
   showProcessingHint();
   const sw = settings.sweep;
   if (sw && !$("#sweep-start").value) {
@@ -1382,10 +1368,12 @@ $("#btn-settings-save").addEventListener("click", (e) => { e.preventDefault(); g
   const body = {};
   document.querySelectorAll("#settings-form fieldset").forEach((fs) => {
     const target = fs.dataset.section ? (body[fs.dataset.section] = {}) : body;
+    const loaded = (fs.dataset.section ? settings[fs.dataset.section] : settings) || {};
     fs.querySelectorAll("[data-key]").forEach((i) => {
       let v = i.type === "checkbox" ? i.checked : i.value;
       if (i.type === "number" && v !== "") v = +v;
-      target[i.dataset.key] = v;
+      // Unchanged fields stay out: e.g. {seq} may have advanced since the form was loaded.
+      if (JSON.stringify(v) !== JSON.stringify(loaded[i.dataset.key])) target[i.dataset.key] = v;
     });
   });
   await api("/api/settings", "POST", body);
@@ -1430,7 +1418,7 @@ async function loadStorage() {
 // After switching, offer to move the existing files along (runs as a background job).
 async function offerMove(direction, data, what) {
   if (!data || !data.files) return;
-  if (!confirm(`Move your existing photos, stacks and videos (${data.files} files, ${gb(data.bytes)}) ${what}?\n\n` +
+  if (!confirm(`Move your existing photos and stacks (${data.files} files, ${gb(data.bytes)}) ${what}?\n\n` +
                "This runs in the background; each file is deleted from the old place only after it has been copied.")) return;
   const r = await api("/api/storage/move", "POST", { direction });
   say("Moving files in the background — see the Jobs tab for progress.", false, "#storage-message");
@@ -1652,7 +1640,7 @@ function restoreView() {
   checkUpdateBanner();
   setInterval(checkUpdateBanner, 10 * 60 * 1000);
   refreshStatus();
-  setInterval(refreshStatus, 1500);
+  scheduleStatus();
   setInterval(pollLens, 2000);
   // Resume watching jobs that were running before a page reload.
   try { (await api("/api/jobs")).jobs.filter((j) => ["queued", "running"].includes(j.status)).forEach((j) => watchJob(j.id)); } catch (_) { /* ignore */ }
