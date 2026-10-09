@@ -17,6 +17,8 @@ else runs in the background, so you can keep shooting:
    a time on a 1 GB Pi, two on 2 GB, one per spare core above that (PNG encoding
    of a 12 MP frame takes 10-15 s on a Pi 3B). Stack frames are only compressed
    after stacking, and not at all when they are deleted after stacking.
+   The **Jobs** tab shows one *compress* job per stack (and one for photos) with
+   its progress and a line per file; **Cancel** drops the files still waiting.
 4. **Stacking** runs as jobs, one stack at a time, at low priority. By default
    it waits until you stop shooting for a few minutes (**Settings → Stack
    processing**, see [Focus stacking](focus-stacking.md#processing)), so the

@@ -344,6 +344,8 @@ async function loadJobs() {
     box.append(el("div", { class: "card" },
       el("div", { class: "row" },
         el("strong", {}, `${j.kind}`), el("span", {}, j.name),
+        j.kind === "compress" && j.total ? el("span", { class: "muted small" },
+          `${j.done + j.failed}/${j.total} files`) : null,
         el("span", { class: "badge " + ({ done: "ok", error: "warn", running: "", queued: "" })[j.status] }, j.status),
         (j.status === "running" || j.status === "queued") && j.kind !== "upload"
           ? el("button", { onclick: () => api(`/api/jobs/${j.id}/cancel`, "POST", {}).then(loadJobs) }, "Cancel") : null,

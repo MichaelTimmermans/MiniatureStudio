@@ -1198,10 +1198,13 @@ class Compressor:
         self.items = []  # {"raw", "final", "upload"}
         self.busy = set()  # raw paths a worker is converting right now
         self.last_error = None
+        self.jobs = {}  # group (stack name or "photos") -> its job in the Jobs tab
         try:
             self.items = json.loads(state_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.items = []
+        for item in self.items:  # resumed after a restart: show them again
+            self._job_for(item)["total"] += 1
         workers = workers or auto_compress_workers()
         for n in range(workers):
             threading.Thread(target=self._worker, daemon=True, name=f"compressor-{n}").start()
@@ -1211,12 +1214,58 @@ class Compressor:
         tmp.write_text(json.dumps(self.items), encoding="utf-8")
         os.replace(tmp, self.state_file)
 
+    @staticmethod
+    def _group(item):
+        """Stack name for stack files, else the folder name (photos)."""
+        return Path(item["raw"]).parent.name
+
+    def _job_for(self, item):
+        """The Jobs-tab entry of this item's group (one per stack / photos), created on
+        demand. Call with self.lock held (or during __init__)."""
+        key = self._group(item)
+        job = self.jobs.get(key)
+        if not job or job["status"] in FINISHED:
+            job = {"id": uuid.uuid4().hex[:12], "kind": "compress", "name": key, "status": "queued",
+                   "log": [], "created": time.time(), "finished": None, "result": None, "error": None,
+                   "total": 0, "done": 0, "failed": 0}
+            with jobs_lock:
+                jobs[job["id"]] = job
+            self.jobs[key] = job
+        return job
+
+    def _finish_job_if_done(self, key):
+        """Call with self.lock held: closes the group's job when nothing is left."""
+        job = self.jobs.get(key)
+        if not job or job["status"] in FINISHED or any(self._group(i) == key for i in self.items):
+            return
+        job["finished"] = time.time()
+        job["result"] = {"compressed": job["done"], "failed": job["failed"]}
+        if job.get("cancel"):
+            job.update(status="error", error="cancelled")
+        elif job["failed"]:
+            job.update(status="error", error=f"{job['failed']} file(s) could not be compressed")
+        else:
+            job["status"] = "done"
+        job_log(job, f"{job['done']} file(s) compressed in {job['finished'] - job['created']:.0f}s")
+
+    def cancel_group(self, key):
+        """Drop the waiting files of a group; a file being converted right now finishes."""
+        with self.lock:
+            job = self.jobs.get(key)
+            if job:
+                job["cancel"] = True
+            self.items = [i for i in self.items if self._group(i) != key or i["raw"] in self.busy]
+            self._persist()
+            self._finish_job_if_done(key)
+
     def add(self, raw, final, upload=None, after=None, priority=0):
         """priority 0 (photos, stack results) is converted before 1 (stack frames)."""
         with self.lock:
             if not any(i["raw"] == str(raw) for i in self.items):
-                self.items.append({"raw": str(raw), "final": str(final), "upload": upload,
-                                   "after": list(after) if after else None, "priority": priority})
+                item = {"raw": str(raw), "final": str(final), "upload": upload,
+                        "after": list(after) if after else None, "priority": priority}
+                self.items.append(item)
+                self._job_for(item)["total"] += 1
                 self._persist()
             self.wake.notify()
 
@@ -1270,8 +1319,11 @@ class Compressor:
                                        key=lambda i: i.get("priority", 0), default=None)):
                     self.wake.wait()
                 self.busy.add(item["raw"])
+                job = self._job_for(item)
+                job["status"] = "running"
             raw, final = Path(item["raw"]), Path(item["final"])
             started = time.time()
+            ok = True
             try:
                 if stack_busy(final.parent.name):
                     # focus-stack or an upload is reading these frames; move to the back, retry later
@@ -1287,15 +1339,20 @@ class Compressor:
                         raw.unlink()
                         drop_thumb_for(raw)
                     log.info("compressed %s in %.1fs", final.name, time.time() - started)
+                    job_log(job, f"{final.name} in {time.time() - started:.0f}s")
                     if item.get("upload"):
                         auto_upload(*item["upload"])
             except Exception as exc:
                 log.exception("Compressing %s failed", raw)
                 self.last_error = f"{final.name}: {exc}"
+                job_log(job, f"ERROR {final.name}: {exc}")
+                ok = False
             with self.lock:
                 if item in self.items:
                     self.items.remove(item)
                 self.busy.discard(item["raw"])
+                job["done" if ok else "failed"] += 1
+                self._finish_job_if_done(self._group(item))
                 after = item.get("after")
                 group_done = bool(after) and not any(i.get("after") == after for i in self.items)
                 try:
@@ -2605,7 +2662,7 @@ def background_summary():
     count = lambda kind: sum(1 for j in active if j["kind"] == kind)
     return {"stacking": count("focus-stack"), "uploading": count("upload"),
             "waiting": stacks_waiting(), "mode": processing_mode(),
-            "other": sum(1 for j in active if j["kind"] not in ("focus-stack", "upload", "sweep")),
+            "other": sum(1 for j in active if j["kind"] not in ("focus-stack", "upload", "sweep", "compress")),
             "saving": len(save_queue.status()["pending"]), "compressing": compressor.status()["queued"]}
 
 
@@ -2876,6 +2933,9 @@ def api_job_cancel(job_id):
     job = jobs.get(job_id)
     if not job:
         abort(404)
+    if job["kind"] == "compress":
+        compressor.cancel_group(job["name"])
+        return jsonify(ok=True)
     job["cancel"] = True
     if job["status"] == "queued":
         with jobs_lock:
@@ -3915,7 +3975,8 @@ def api_update_apply():
     if active_stack:
         return jsonify(ok=False, error="finish the stack first"), 409
     with jobs_lock:
-        busy = [j for j in jobs.values() if j["status"] in ("queued", "running")]
+        # Compression resumes by itself after the restart, so it does not block an update.
+        busy = [j for j in jobs.values() if j["status"] in ("queued", "running") and j["kind"] != "compress"]
     if busy:
         return jsonify(ok=False, error="wait until running jobs have finished"), 409
     return jsonify(ok=True, job=start_job("update", "miniaturestudio", run_self_update)["id"])
