@@ -80,8 +80,8 @@
       <button data-tab="stacks">Stacks</button>
       <button data-tab="gallery">Gallery</button>
       <button data-tab="jobs">Jobs</button>
-      <button data-tab="system">System</button>
       <button data-tab="settings">Settings</button>
+      <button data-tab="system">System</button>
     </nav>
 
     <!-- Capture -->
@@ -285,8 +285,17 @@
 
     <!-- System -->
     <div class="tab" id="tab-system" hidden>
-      <div id="system-warnings"></div>
-      <div id="system-stats" class="stats"></div>
+      <fieldset>
+        <legend>Power</legend>
+        <div class="row">
+          <button id="btn-restart-app">Restart app</button>
+          <button id="btn-reboot" class="danger">Reboot Pi</button>
+          <button id="btn-shutdown" class="danger">Shut down Pi</button>
+        </div>
+        <div class="muted small">Pending captures are written first. Shut down before unplugging the power
+          — pulling the plug can corrupt the SD card.</div>
+        <div id="system-message" class="status small"></div>
+      </fieldset>
       <fieldset>
         <legend>Log</legend>
         <div class="row small">
@@ -300,17 +309,8 @@
         <pre id="log-view" class="log log-big"></pre>
         <div class="muted small" id="log-source"></div>
       </fieldset>
-      <fieldset>
-        <legend>Power</legend>
-        <div class="row">
-          <button id="btn-restart-app">Restart app</button>
-          <button id="btn-reboot" class="danger">Reboot Pi</button>
-          <button id="btn-shutdown" class="danger">Shut down Pi</button>
-        </div>
-        <div class="muted small">Pending captures are written first. Shut down before unplugging the power
-          — pulling the plug can corrupt the SD card.</div>
-        <div id="system-message" class="status small"></div>
-      </fieldset>
+      <div id="system-warnings"></div>
+      <div id="system-stats" class="stats"></div>
     </div>
 
     <!-- Settings -->
@@ -335,7 +335,8 @@
           <button id="btn-storage-forget" class="danger" hidden>Forget USB disk</button>
         </div>
         <div class="muted small">Photos and stacks go to a <code>MiniatureStudio</code> folder on the disk.
-          ext4, exFAT, FAT32 and NTFS work; the disk is mounted again at every boot and when you replug it.
+          ext4, exFAT, FAT32 and NTFS work — ext4 is by far the fastest on a Pi (NTFS uses a slow driver);
+          “Format as ext4…” erases a disk and sets it up. The disk is mounted again at every boot and when you replug it.
           A USB SSD is fastest and wears least.</div>
         <div id="storage-message" class="status small"></div>
       </fieldset>

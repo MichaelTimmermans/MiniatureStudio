@@ -14,6 +14,7 @@ sudoers rule for the service user. Usage (JSON on stdin, JSON on stdout):
     miniaturestudio-mount usb-eject                     unmount, keep it configured
     miniaturestudio-mount usb-remove                    unmount and forget it
     miniaturestudio-mount usb-status
+    miniaturestudio-mount usb-format  {"device": "/dev/sdX1", "label": "..."}   ERASES it: ext4
 
     miniaturestudio-mount camera-set  {"sensor": "auto"|"imx519"|"arducam-64mp"|..., "port": ""|"cam0"|"cam1"}
     miniaturestudio-mount camera-status                 camera lines in config.txt (reboot to apply)
@@ -37,6 +38,8 @@ USB_MARKER = "# miniaturestudio-usb"
 USB_STATE_FILE = f"{CRED_DIR}/usb.json"
 USB_MOUNT = "/mnt/miniaturestudio-usb"
 UUID_RE = re.compile(r"^[A-Fa-f0-9-]{4,36}$")
+DEVICE_RE = re.compile(r"^/dev/sd[a-z][0-9]{0,2}$")
+LABEL_RE = re.compile(r"^[A-Za-z0-9_-]{0,16}$")  # ext4 labels: max 16 bytes
 USB_FSTYPES = {"ext4", "vfat", "exfat", "ntfs"}
 
 HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$|^\[?[0-9A-Fa-f:.]+\]?$")
@@ -133,6 +136,61 @@ def usb_unmount():
             fail("the disk is busy — wait for background saving to finish and try again")
 
 
+def check_usb_device(device):
+    """Refuse anything that is not a USB disk, and never the disk the system runs from."""
+    for mp in ("/", "/boot", "/boot/firmware"):
+        src = run("findmnt", "-n", "-o", "SOURCE", mp).stdout.strip()
+        if src and (os.path.realpath(src) == os.path.realpath(device)
+                    or run("lsblk", "-no", "PKNAME", src).stdout.strip() ==
+                    (run("lsblk", "-no", "PKNAME", device).stdout.strip() or os.path.basename(device))):
+            fail("that is the system disk")
+    parent = run("lsblk", "-no", "PKNAME", device).stdout.strip() or os.path.basename(device)
+    if run("lsblk", "-dno", "TRAN", f"/dev/{parent}").stdout.strip() != "usb":
+        fail("not a USB disk")
+
+
+def usb_format():
+    """Erase one USB partition and make it ext4 (owned by the service user). The disk
+    that is in use for photos is refused: switch to the SD card first."""
+    try:
+        req = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        fail("invalid JSON")
+    device = (req.get("device") or "").strip()
+    label = (req.get("label") or "MiniStudio").strip()
+    if not DEVICE_RE.match(device) or not os.path.exists(device):
+        fail("invalid device")
+    if not LABEL_RE.match(label):
+        fail("label: up to 16 letters, digits, - or _")
+    check_usb_device(device)
+    kind = run("lsblk", "-dno", "TYPE", device).stdout.strip()
+    if kind == "disk" and run("lsblk", "-no", "NAME", device).stdout.split()[1:]:
+        fail("pick a partition of this disk, not the whole disk")
+    if is_mounted(USB_MOUNT):
+        src = run("findmnt", "-n", "-o", "SOURCE", USB_MOUNT).stdout.strip()
+        if src and os.path.realpath(src) == os.path.realpath(device):
+            fail("this disk is in use for photos — switch to the SD card first")
+    for mp in run("findmnt", "-n", "-o", "TARGET", device).stdout.split():
+        if run("umount", mp).returncode != 0:
+            fail(f"the disk is busy ({mp}) — close what uses it and try again")
+    old_uuid = run("blkid", "-s", "UUID", "-o", "value", device).stdout.strip()
+    uid = int(os.environ.get("SUDO_UID", "1000"))
+    gid = int(os.environ.get("SUDO_GID", "1000"))
+    # lazy init + nodiscard: seconds instead of minutes, also on a big SSD over USB 2.
+    r = run("mkfs.ext4", "-F", "-q", "-L", label, "-m", "0",
+            "-E", f"lazy_itable_init=1,lazy_journal_init=1,nodiscard,root_owner={uid}:{gid}", device)
+    if r.returncode != 0:
+        fail("formatting failed: " + ((r.stderr or r.stdout).strip() or "unknown error"))
+    run("udevadm", "settle")
+    state = load_usb_state()
+    if state and old_uuid and state.get("uuid") == old_uuid:  # it was configured: that entry is stale now
+        write_fstab(strip_entry(read_fstab(), USB_MARKER))
+        os.remove(USB_STATE_FILE)
+        run("systemctl", "daemon-reload")
+    uuid = run("blkid", "-s", "UUID", "-o", "value", device).stdout.strip()
+    out({"device": device, "uuid": uuid, "fstype": "ext4", "label": label, "old_uuid": old_uuid})
+
+
 def usb_action(action):
     state = load_usb_state()
     if action == "usb-status":
@@ -155,6 +213,8 @@ def usb_action(action):
             os.remove(USB_STATE_FILE)
         run("systemctl", "daemon-reload")
         out({"configured": False, "mounted": False})
+    if action == "usb-format":
+        usb_format()
     if action != "usb-mount":
         fail("unknown usb action")
 
@@ -172,13 +232,7 @@ def usb_action(action):
     if fstype not in USB_FSTYPES:
         fail(f"unsupported filesystem {fstype!r} (use ext4, exFAT, FAT32 or NTFS)")
     # Never take over the disk the system itself runs from.
-    for mp in ("/", "/boot", "/boot/firmware"):
-        src = run("findmnt", "-n", "-o", "SOURCE", mp).stdout.strip()
-        if src and os.path.realpath(src) == os.path.realpath(device):
-            fail("that is the system disk")
-    parent = run("lsblk", "-no", "PKNAME", device).stdout.strip() or os.path.basename(device)
-    if run("lsblk", "-dno", "TRAN", f"/dev/{parent}").stdout.strip() != "usb":
-        fail("not a USB disk")
+    check_usb_device(device)
 
     uid = int(os.environ.get("SUDO_UID", "1000"))
     gid = int(os.environ.get("SUDO_GID", "1000"))

@@ -38,6 +38,14 @@ at every boot and when you replug it. When switching you are offered to move
 the existing photos along (a background job that deletes each file only after
 it was copied); switching back to the SD card offers the same the other way.
 
+**Use ext4 for speed.** On a Pi, NTFS goes through a slow userspace driver that
+costs a lot of CPU on every write; exFAT/FAT32 are better, ext4 is fastest and
+survives power cuts best. **Format as ext4…** next to a disk erases it and sets it
+up (type FORMAT to confirm). Windows cannot read ext4 without extra software — fine
+for a disk that stays on the Pi. The disk in use cannot be formatted: choose **Back
+to SD card** first (your files can be moved along), format, then **Use this disk**
+again and move the files back.
+
 If the selected disk is missing, capturing stops with a clear message instead
 of silently writing to the SD card. Use **Safely remove USB disk** before
 unplugging. A USB SSD is the fastest and most durable option.

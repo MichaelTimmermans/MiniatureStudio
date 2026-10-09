@@ -3416,11 +3416,11 @@ def api_drive_disconnect():
 MOUNT_HELPER = "/usr/local/sbin/miniaturestudio-mount"
 
 
-def run_mount_helper(action, payload=None):
+def run_mount_helper(action, payload=None, timeout=90):
     if not Path(MOUNT_HELPER).exists():
         raise RuntimeError("mount helper not installed — run ./install.sh again")
     proc = subprocess.run(["sudo", "-n", MOUNT_HELPER, action], input=json.dumps(payload or {}),
-                          capture_output=True, text=True, timeout=90)
+                          capture_output=True, text=True, timeout=timeout)
     try:
         result = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError:
@@ -3486,7 +3486,9 @@ def list_usb_disks():
         if dev.get("tran") != "usb":
             continue
         for part in dev.get("children") or [dev]:
-            if not part.get("fstype") or part.get("mountpoint") in ("/", "/boot", "/boot/firmware"):
+            if part.get("mountpoint") in ("/", "/boot", "/boot/firmware"):
+                continue
+            if not part.get("fstype") and part.get("type") == "disk" and part.get("children"):
                 continue
             disks.append({
                 "path": part.get("path"), "uuid": part.get("uuid"), "label": part.get("label"),
@@ -3570,6 +3572,33 @@ def api_storage_usb():
         data_dir(kind)
     files, size = data_size(sd_dir)
     return jsonify(ok=True, usb=result, sd_data={"files": files, "bytes": size})
+
+
+@app.route("/api/storage/usb/format", methods=["POST"])
+def api_storage_usb_format():
+    """Erase a USB partition and make it ext4 — much faster than NTFS on a Pi (NTFS goes
+    through a slow userspace driver). Never the disk currently used for captures."""
+    body = request.get_json(force=True) or {}
+    path, label = body.get("path", ""), (body.get("label") or "MiniStudio").strip()
+    disk = next((d for d in list_usb_disks() if d["path"] == path), None)
+    if not disk:
+        return jsonify(ok=False, error="disk not found — click Look for USB disks"), 404
+    st = CONFIG.get("storage", {})
+    if storage_target() == "usb" and disk.get("uuid") and disk["uuid"] == st.get("uuid"):
+        return jsonify(ok=False, error="this disk is in use for photos — switch to the SD card first "
+                                       "(your files can be moved along), then format it"), 409
+    busy = storage_busy()
+    if busy:
+        return jsonify(ok=False, error=busy), 409
+    try:
+        result = run_mount_helper("usb-format", {"device": path, "label": label}, timeout=600)
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    if st.get("uuid") and st.get("uuid") == result.get("old_uuid"):
+        CONFIG["storage"] = {"target": storage_target()}  # the old disk entry no longer exists
+        save_config()
+    log.warning("USB disk %s formatted as ext4 (%s)", path, label)
+    return jsonify(ok=True, **result)
 
 
 @app.route("/api/storage/sd", methods=["POST"])

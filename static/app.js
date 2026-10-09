@@ -1409,12 +1409,19 @@ async function loadStorage() {
     list.append(el("p", { class: "muted small" }, "No USB disks found. Plug one in and click “Look for USB disks”."));
   }
   for (const d of disks) {
-    const name = `${d.label || d.model || d.path} (${d.fstype}, ${gb(d.size)})`;
+    const name = `${d.label || d.model || d.path} (${d.fstype || "not formatted"}, ${gb(d.size)})`;
     list.append(el("div", { class: "card row" },
       el("span", {}, name),
       d.supported
         ? el("button", { class: "primary", onclick: () => useUsb(d, name) }, "Use this disk")
-        : el("span", { class: "muted small" }, `${d.fstype} is not supported — format it as exFAT or ext4`)));
+        : el("span", { class: "muted small" }, `${d.fstype || "no filesystem"} — format it to use it`),
+      d.fstype !== "ext4" ? el("button", { class: "danger", title: "ext4 is the fastest and most robust on a Pi (Windows cannot read it without extra software)",
+        onclick: () => formatUsb(d, name) }, "Format as ext4…") : null));
+  }
+  if (r.target === "usb" && r.usb_mounted && r.usb.fstype && r.usb.fstype !== "ext4") {
+    list.append(el("p", { class: "muted small" },
+      `This disk is ${r.usb.fstype}. ext4 is much faster on a Pi — to format it, choose “Back to SD card” first ` +
+      "(your files can be moved along), then format it here and use it again."));
   }
   $("#btn-storage-eject").hidden = !(r.target === "usb" && r.usb_mounted);
   $("#btn-storage-sd").hidden = r.target !== "usb";
@@ -1429,6 +1436,19 @@ async function offerMove(direction, data, what) {
   const r = await api("/api/storage/move", "POST", { direction });
   say("Moving files in the background — see the Jobs tab for progress.", false, "#storage-message");
   watchJob(r.job);
+}
+
+async function formatUsb(disk, name) {
+  await guarded(async () => {
+    const typed = prompt(`FORMAT ${name}?\n\nEVERYTHING ON THIS DISK (partition ${disk.path}) IS ERASED — photos, ` +
+      "stacks and any other files. It becomes ext4: fast on the Pi, but Windows cannot read it without extra software.\n\n" +
+      "Type FORMAT to continue:");
+    if (typed !== "FORMAT") { say("Not formatted.", false, "#storage-message"); return; }
+    say("Formatting… (a few seconds to a minute)", false, "#storage-message");
+    const r = await api("/api/storage/usb/format", "POST", { path: disk.path, label: "MiniStudio" });
+    say(`Formatted as ext4 (label ${r.label}). Click “Use this disk” to store photos on it.`, false, "#storage-message");
+    await loadStorage();
+  }, "#storage-message");
 }
 
 async function useUsb(disk, name) {
