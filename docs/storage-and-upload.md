@@ -55,6 +55,30 @@ If the selected disk is missing, capturing stops with a clear message instead
 of silently writing to the SD card. Use **Safely remove USB disk** before
 unplugging. A USB SSD is the fastest and most durable option.
 
+## Which disk?
+
+A focus stack writes one ~37 MB TIFF per frame, many in a row. What matters is the
+**sustained** write speed — the speed printed on a USB stick is usually only its
+small fast buffer. **Settings → Storage → Speed test** measures it (writes 512 MB);
+roughly, a 12 MP frame takes `37 MB ÷ sustained speed`.
+
+Measured on a Raspberry Pi 4:
+
+| Disk | File system | Sustained write | Per frame |
+|---|---|---|---|
+| 2.5" hard disk in a USB 3 enclosure | ext4 | ~50 MB/s (75-88 MB/s steady after a short dip) | ~0.8 s |
+| NVMe SSD in a USB enclosure (running at USB 2) | NTFS | — | 0.7-0.8 s |
+| Kingston DataTraveler 64 GB USB 3 stick ("60 MB/s") | exFAT | ~7 MB/s, jumping 3-17 MB/s | ~6 s |
+| same stick | ext4 | ~3 MB/s | 13+ s |
+
+So: **an SSD or a plain hard disk** (a small or old one is plenty — with "delete
+frames after stacking" a busy evening needs a few GB). Cheap USB sticks are fine
+for occasional photos but too slow for stacks, and slower still with ext4 (its
+journal makes many small writes elsewhere on the stick) — use exFAT on a stick.
+A hard disk needs a bit more power (a powered hub is the safe choice), spins down
+when idle (the first frame after a break waits a few seconds) and should not touch
+the booth, so its vibration cannot shake the camera.
+
 ## Disk space limit
 
 New captures (photos, stacks, sweeps) stop when the capture disk is

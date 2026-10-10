@@ -140,14 +140,17 @@ compression workers with the RAM it finds.
 | | Absolute minimum | Tested | Proper minimum | Recommended |
 |---|---|---|---|---|
 | **Pi** | Pi 3B, 1 GB | Pi 4, 1 GB | Pi 4, 2 GB | **Pi 4, 4 GB** |
-| **Disk** | USB 2 only (~35 MB/s max) | USB 3 | USB 3 | USB 3 SSD or fast stick |
+| **Disk** | USB 2 only (~35 MB/s max) | USB 3 | USB 3 | USB 3 SSD or hard disk |
 | **Stacking (halo-free), per frame** | 16-22 s *(measured: 8 frames in 132-176 s)* | ~7 s *(measured: 18 frames in 126 s)* | ~7 s *(expected)* | ~7 s *(expected)* |
 | **PNG compression, per 12 MP image** | 10-15 s *(measured)* | ~6 s *(measured)* | ~6 s, 2 at a time *(expected)* | ~6 s, 3 at a time *(expected)* |
 | **Writing one raw frame** | 5-10 s on a cheap stick *(observed)*, ~1.5-2 s at best | 0.7-0.8 s *(measured, SSD on USB 2)* | well under 1 s | well under 1 s |
 | **Working while it processes** | slows down noticeably; one job at a time | fine; one job at a time | fine | smooth |
 
 Stacking itself runs one stack at a time on every model; more memory mostly
-lets compression and the rest of the app keep going alongside it.
+lets compression and the rest of the app keep going alongside it. For the disk,
+sustained write speed matters, not the number on the box — see
+[Which disk?](docs/storage-and-upload.md#which-disk) (measured: a plain USB 3 hard
+disk ~0.8 s per frame, a cheap USB stick ~6 s).
 
 A **Pi 5 (4 GB)** is faster still (stacking roughly twice a Pi 4) and can use an
 NVMe SSD, but needs a different camera cable, a 27 W power supply and active
