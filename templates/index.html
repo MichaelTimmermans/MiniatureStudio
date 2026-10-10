@@ -341,8 +341,9 @@
         </div>
         <div id="speed-result" class="small"></div>
         <div class="muted small">Photos and stacks go to a <code>MiniatureStudio</code> folder on the disk.
-          ext4, exFAT, FAT32 and NTFS work — ext4 is by far the fastest on a Pi (NTFS uses a slow driver);
-          “Format as ext4…” erases a disk and sets it up. The disk is mounted again at every boot and when you replug it.
+          Best: an SSD or a plain (even old) hard disk, formatted as ext4. USB sticks are finicky — fine for photos,
+          often too slow for stacks; use exFAT on a stick (ext4 makes cheap sticks much slower). NTFS works but is slow on a Pi.
+          Check a disk with the speed test below. The disk is mounted again at every boot and when you replug it.
           A USB SSD is fastest and wears least.</div>
         <div id="storage-message" class="status small"></div>
       </fieldset>

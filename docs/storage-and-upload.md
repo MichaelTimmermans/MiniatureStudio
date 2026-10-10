@@ -38,46 +38,55 @@ at every boot and when you replug it. When switching you are offered to move
 the existing photos along (a background job that deletes each file only after
 it was copied); switching back to the SD card offers the same the other way.
 
-**Formatting:** next to each disk, **Format as ext4…** and **Format as exFAT…**
-erase it (type FORMAT to confirm). ext4 is best for SSDs. Cheap USB sticks can be
-much slower with ext4 (its journal makes many small writes elsewhere on the
-stick) — try exFAT and compare with the **Speed test** (Settings → Storage).
-
-**Use ext4 for speed.** On a Pi, NTFS goes through a slow userspace driver that
-costs a lot of CPU on every write; exFAT/FAT32 are better, ext4 is fastest and
-survives power cuts best. **Format as ext4…** next to a disk erases it and sets it
-up (type FORMAT to confirm). Windows cannot read ext4 without extra software — fine
-for a disk that stays on the Pi. The disk in use cannot be formatted: choose **Back
-to SD card** first (your files can be moved along), format, then **Use this disk**
-again and move the files back.
-
 If the selected disk is missing, capturing stops with a clear message instead
 of silently writing to the SD card. Use **Safely remove USB disk** before
-unplugging. A USB SSD is the fastest and most durable option.
+unplugging.
 
 ## Which disk?
 
-A focus stack writes one ~37 MB TIFF per frame, many in a row. What matters is the
-**sustained** write speed — the speed printed on a USB stick is usually only its
-small fast buffer. **Settings → Storage → Speed test** measures it (writes 512 MB);
-roughly, a 12 MP frame takes `37 MB ÷ sustained speed`.
+A focus stack writes one ~37 MB TIFF per frame, many in a row, so what matters is
+the **sustained** write speed. The speed printed on a USB stick is usually only
+its small fast buffer: once that is full (after a few frames) a cheap stick drops
+to a few MB/s. **Settings → Storage → Speed test** measures the real thing (writes
+512 MB in steps); roughly, a 12 MP frame takes `37 MB ÷ sustained speed`.
 
 Measured on a Raspberry Pi 4:
 
 | Disk | File system | Sustained write | Per frame |
 |---|---|---|---|
-| 2.5" old laptop hard disk in a USB 3 enclosure | as it came | ~50 MB/s (75-88 MB/s steady after a short dip) | ~0.8 s |
+| Old 2.5" laptop hard disk in a USB 3 enclosure | ext4 | ~50 MB/s (75-88 MB/s steady after a short dip) | ~0.8 s |
 | NVMe SSD in a USB enclosure (running at USB 2) | NTFS | — | 0.7-0.8 s |
-| Kingston DataTraveler 64 GB USB 3 stick ("60 MB/s") | exFAT | ~7 MB/s, jumping 3-17 MB/s | ~6 s |
-| same stick | ext4 | ~3 MB/s | 13+ s |
+| Kingston DataTraveler 64 GB USB 3 stick ("60 MB/s" on the box) | exFAT | ~7 MB/s, jumping 3-17 MB/s | ~6 s |
+| the same stick | ext4 | ~3 MB/s | 13+ s |
+| the same stick on a Windows laptop (H2testw) | exFAT | 18 MB/s | — |
 
-So: **an SSD or a plain hard disk** (a small or old one is plenty — with "delete
-frames after stacking" a busy evening needs a few GB). Cheap USB sticks are fine
-for occasional photos but too slow for stacks, and slower still with ext4 (its
-journal makes many small writes elsewhere on the stick) — use exFAT on a stick.
-A hard disk needs a bit more power (a powered hub is the safe choice), spins down
-when idle (the first frame after a break waits a few seconds) and should not touch
-the booth, so its vibration cannot shake the camera.
+**Recommendation:**
+
+- **A plain hard disk or an SSD.** An old laptop disk you were about to throw
+  away works great: steady speed, no buffer that runs full. A small one is plenty
+  — with "Delete source frames after stacking" a busy evening needs a few GB.
+  A hard disk needs a bit more power (a powered USB hub is the safe choice), spins
+  down when idle (the first frame after a break waits a few seconds) and should
+  not touch the booth, so its vibration cannot shake the camera.
+- **USB sticks are finicky.** Fine for occasional photos, too slow for stacks —
+  and the number on the box says nothing about long writes. Check one with the
+  speed test before relying on it.
+
+## Formatting: ext4 or exFAT
+
+Next to each disk, **Format as ext4…** and **Format as exFAT…** erase it and set
+it up (type FORMAT to confirm). The disk in use cannot be formatted: choose
+**Back to SD card** first (your files can be moved along), format, then **Use this
+disk** again and move the files back.
+
+| | Hard disk / SSD | USB stick |
+|---|---|---|
+| **ext4** | **best**: fast, survives power cuts | **avoid**: its journal makes many small writes elsewhere on the stick, which cheap flash handles very badly (2.5× slower on the stick above) |
+| **exFAT** | works | **best for sticks**: no journal; Windows can read it |
+| **NTFS** | works, but slow on a Pi (it goes through a userspace driver that costs a lot of CPU on every write) | avoid |
+
+Windows cannot read ext4 without extra software — fine for a disk that stays on
+the Pi.
 
 ## Disk space limit
 

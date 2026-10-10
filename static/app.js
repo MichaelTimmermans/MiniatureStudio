@@ -1416,14 +1416,14 @@ async function loadStorage() {
       d.supported
         ? el("button", { class: "primary", onclick: () => useUsb(d, name) }, "Use this disk")
         : el("span", { class: "muted small" }, `${d.fstype || "no filesystem"} — format it to use it`),
-      el("button", { class: "danger", title: "Best for SSDs: fast and robust (Windows cannot read it without extra software)",
+      el("button", { class: "danger", title: "Best for hard disks and SSDs: fast and robust. Avoid on cheap USB sticks (much slower). Windows cannot read it without extra software.",
         onclick: () => formatUsb(d, name, "ext4") }, d.fstype === "ext4" ? "Reformat as ext4…" : "Format as ext4…"),
-      el("button", { class: "danger", title: "Often much faster on cheap USB sticks (no journal); Windows can read it",
+      el("button", { class: "danger", title: "Best for USB sticks (no journal; ext4 makes cheap sticks much slower). Windows can read it.",
         onclick: () => formatUsb(d, name, "exfat") }, d.fstype === "exfat" ? "Reformat as exFAT…" : "Format as exFAT…")));
   }
   if (r.target === "usb" && r.usb_mounted) {
     list.append(el("p", { class: "muted small" },
-      (r.usb.fstype && r.usb.fstype !== "ext4" ? `This disk is ${r.usb.fstype}; ext4 is much faster on a Pi. ` : "") +
+      (r.usb.fstype === "ntfs" ? "This disk is NTFS, which is slow on a Pi: ext4 for a hard disk or SSD, exFAT for a USB stick. " : "") +
       "To (re)format the disk in use, choose “Back to SD card” first (your files can be moved along), " +
       "then format it here and use it again."));
   }
@@ -1446,8 +1446,8 @@ async function offerMove(direction, data, what) {
 async function formatUsb(disk, name, fstype = "ext4") {
   await guarded(async () => {
     const what = fstype === "exfat"
-      ? "exFAT: no journal, often much faster on USB sticks, readable by Windows."
-      : "ext4: fast and robust on SSDs, but Windows cannot read it without extra software.";
+      ? "exFAT: the best choice for a USB stick (no journal), readable by Windows."
+      : "ext4: the best choice for a hard disk or SSD. Avoid it on a USB stick (much slower there). Windows cannot read it without extra software.";
     const typed = prompt(`FORMAT ${name} as ${fstype}?\n\nEVERYTHING ON THIS DISK (partition ${disk.path}) IS ERASED — photos, ` +
       `stacks and any other files.\n\n${what}\n\nType FORMAT to continue:`);
     if (typed !== "FORMAT") { say("Not formatted.", false, "#storage-message"); return; }
