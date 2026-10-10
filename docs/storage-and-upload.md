@@ -38,6 +38,11 @@ at every boot and when you replug it. When switching you are offered to move
 the existing photos along (a background job that deletes each file only after
 it was copied); switching back to the SD card offers the same the other way.
 
+**Formatting:** next to each disk, **Format as ext4…** and **Format as exFAT…**
+erase it (type FORMAT to confirm). ext4 is best for SSDs. Cheap USB sticks can be
+much slower with ext4 (its journal makes many small writes elsewhere on the
+stick) — try exFAT and compare with the **Speed test** (Settings → Storage).
+
 **Use ext4 for speed.** On a Pi, NTFS goes through a slow userspace driver that
 costs a lot of CPU on every write; exFAT/FAT32 are better, ext4 is fastest and
 survives power cuts best. **Format as ext4…** next to a disk erases it and sets it

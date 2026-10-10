@@ -3583,6 +3583,9 @@ def api_storage_usb_format():
     through a slow userspace driver). Never the disk currently used for captures."""
     body = request.get_json(force=True) or {}
     path, label = body.get("path", ""), (body.get("label") or "MiniStudio").strip()
+    fstype = body.get("fstype") or "ext4"
+    if fstype not in ("ext4", "exfat"):
+        return jsonify(ok=False, error="fstype must be ext4 or exfat"), 400
     disk = next((d for d in list_usb_disks() if d["path"] == path), None)
     if not disk:
         return jsonify(ok=False, error="disk not found — click Look for USB disks"), 404
@@ -3594,13 +3597,13 @@ def api_storage_usb_format():
     if busy:
         return jsonify(ok=False, error=busy), 409
     try:
-        result = run_mount_helper("usb-format", {"device": path, "label": label}, timeout=600)
+        result = run_mount_helper("usb-format", {"device": path, "label": label, "fstype": fstype}, timeout=600)
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)), 400
     if st.get("uuid") and st.get("uuid") == result.get("old_uuid"):
         CONFIG["storage"] = {"target": storage_target()}  # the old disk entry no longer exists
         save_config()
-    log.warning("USB disk %s formatted as ext4 (%s)", path, label)
+    log.warning("USB disk %s formatted as %s (%s)", path, fstype, label)
     return jsonify(ok=True, **result)
 
 

@@ -14,7 +14,7 @@ sudoers rule for the service user. Usage (JSON on stdin, JSON on stdout):
     miniaturestudio-mount usb-eject                     unmount, keep it configured
     miniaturestudio-mount usb-remove                    unmount and forget it
     miniaturestudio-mount usb-status
-    miniaturestudio-mount usb-format  {"device": "/dev/sdX1", "label": "..."}   ERASES it: ext4
+    miniaturestudio-mount usb-format  {"device": "/dev/sdX1", "label": "...", "fstype": "ext4"|"exfat"}   ERASES it
 
     miniaturestudio-mount camera-set  {"sensor": "auto"|"imx519"|"arducam-64mp"|..., "port": ""|"cam0"|"cam1"}
     miniaturestudio-mount camera-status                 camera lines in config.txt (reboot to apply)
@@ -150,14 +150,20 @@ def check_usb_device(device):
 
 
 def usb_format():
-    """Erase one USB partition and make it ext4 (owned by the service user). The disk
-    that is in use for photos is refused: switch to the SD card first."""
+    """Erase one USB partition and make it ext4 (owned by the service user) or exFAT
+    (no journal: cheap USB sticks often write far faster with it). The app refuses the
+    disk that is in use for photos."""
     try:
         req = json.loads(sys.stdin.read() or "{}")
     except ValueError:
         fail("invalid JSON")
     device = (req.get("device") or "").strip()
     label = (req.get("label") or "MiniStudio").strip()
+    fstype = req.get("fstype") or "ext4"
+    if fstype not in ("ext4", "exfat"):
+        fail("fstype must be ext4 or exfat")
+    if fstype == "exfat" and len(label) > 11:
+        fail("exFAT labels are at most 11 characters")
     if not DEVICE_RE.match(device) or not os.path.exists(device):
         fail("invalid device")
     if not LABEL_RE.match(label):
@@ -183,8 +189,11 @@ def usb_format():
     # frame writes to ~1 MB/s for a long time. One inode per 256 KB (photos are big
     # files) keeps those tables small, so this takes seconds. Discard tells flash the
     # whole disk is free (quick, or skipped when the stick does not support it).
-    r = run("mkfs.ext4", "-F", "-q", "-L", label, "-m", "0", "-i", "262144",
-            "-E", f"lazy_itable_init=0,lazy_journal_init=0,root_owner={uid}:{gid}", device)
+    if fstype == "exfat":
+        r = run("mkfs.exfat", "-L", label, device)
+    else:
+        r = run("mkfs.ext4", "-F", "-q", "-L", label, "-m", "0", "-i", "262144",
+                "-E", f"lazy_itable_init=0,lazy_journal_init=0,root_owner={uid}:{gid}", device)
     if r.returncode != 0:
         fail("formatting failed: " + ((r.stderr or r.stdout).strip() or "unknown error"))
     run("udevadm", "settle")
@@ -194,7 +203,7 @@ def usb_format():
         os.remove(USB_STATE_FILE)
         run("systemctl", "daemon-reload")
     uuid = run("blkid", "-s", "UUID", "-o", "value", device).stdout.strip()
-    out({"device": device, "uuid": uuid, "fstype": "ext4", "label": label, "old_uuid": old_uuid})
+    out({"device": device, "uuid": uuid, "fstype": fstype, "label": label, "old_uuid": old_uuid})
 
 
 def usb_action(action):

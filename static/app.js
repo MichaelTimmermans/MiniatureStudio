@@ -1416,8 +1416,10 @@ async function loadStorage() {
       d.supported
         ? el("button", { class: "primary", onclick: () => useUsb(d, name) }, "Use this disk")
         : el("span", { class: "muted small" }, `${d.fstype || "no filesystem"} — format it to use it`),
-      el("button", { class: "danger", title: "ext4 is the fastest and most robust on a Pi (Windows cannot read it without extra software)",
-        onclick: () => formatUsb(d, name) }, d.fstype === "ext4" ? "Reformat as ext4…" : "Format as ext4…")));
+      el("button", { class: "danger", title: "Best for SSDs: fast and robust (Windows cannot read it without extra software)",
+        onclick: () => formatUsb(d, name, "ext4") }, d.fstype === "ext4" ? "Reformat as ext4…" : "Format as ext4…"),
+      el("button", { class: "danger", title: "Often much faster on cheap USB sticks (no journal); Windows can read it",
+        onclick: () => formatUsb(d, name, "exfat") }, d.fstype === "exfat" ? "Reformat as exFAT…" : "Format as exFAT…")));
   }
   if (r.target === "usb" && r.usb_mounted) {
     list.append(el("p", { class: "muted small" },
@@ -1441,15 +1443,17 @@ async function offerMove(direction, data, what) {
   watchJob(r.job);
 }
 
-async function formatUsb(disk, name) {
+async function formatUsb(disk, name, fstype = "ext4") {
   await guarded(async () => {
-    const typed = prompt(`FORMAT ${name}?\n\nEVERYTHING ON THIS DISK (partition ${disk.path}) IS ERASED — photos, ` +
-      "stacks and any other files. It becomes ext4: fast on the Pi, but Windows cannot read it without extra software.\n\n" +
-      "Type FORMAT to continue:");
+    const what = fstype === "exfat"
+      ? "exFAT: no journal, often much faster on USB sticks, readable by Windows."
+      : "ext4: fast and robust on SSDs, but Windows cannot read it without extra software.";
+    const typed = prompt(`FORMAT ${name} as ${fstype}?\n\nEVERYTHING ON THIS DISK (partition ${disk.path}) IS ERASED — photos, ` +
+      `stacks and any other files.\n\n${what}\n\nType FORMAT to continue:`);
     if (typed !== "FORMAT") { say("Not formatted.", false, "#storage-message"); return; }
-    say("Formatting… (a few seconds to a minute)", false, "#storage-message");
-    const r = await api("/api/storage/usb/format", "POST", { path: disk.path, label: "MiniStudio" });
-    say(`Formatted as ext4 (label ${r.label}). Click “Use this disk” to store photos on it.`, false, "#storage-message");
+    say("Formatting… (a few seconds to a few minutes)", false, "#storage-message");
+    const r = await api("/api/storage/usb/format", "POST", { path: disk.path, label: "MiniStudio", fstype });
+    say(`Formatted as ${r.fstype} (label ${r.label}). Click “Use this disk” to store photos on it.`, false, "#storage-message");
     await loadStorage();
   }, "#storage-message");
 }
