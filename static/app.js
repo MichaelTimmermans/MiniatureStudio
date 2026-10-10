@@ -1416,13 +1416,14 @@ async function loadStorage() {
       d.supported
         ? el("button", { class: "primary", onclick: () => useUsb(d, name) }, "Use this disk")
         : el("span", { class: "muted small" }, `${d.fstype || "no filesystem"} — format it to use it`),
-      d.fstype !== "ext4" ? el("button", { class: "danger", title: "ext4 is the fastest and most robust on a Pi (Windows cannot read it without extra software)",
-        onclick: () => formatUsb(d, name) }, "Format as ext4…") : null));
+      el("button", { class: "danger", title: "ext4 is the fastest and most robust on a Pi (Windows cannot read it without extra software)",
+        onclick: () => formatUsb(d, name) }, d.fstype === "ext4" ? "Reformat as ext4…" : "Format as ext4…")));
   }
-  if (r.target === "usb" && r.usb_mounted && r.usb.fstype && r.usb.fstype !== "ext4") {
+  if (r.target === "usb" && r.usb_mounted) {
     list.append(el("p", { class: "muted small" },
-      `This disk is ${r.usb.fstype}. ext4 is much faster on a Pi — to format it, choose “Back to SD card” first ` +
-      "(your files can be moved along), then format it here and use it again."));
+      (r.usb.fstype && r.usb.fstype !== "ext4" ? `This disk is ${r.usb.fstype}; ext4 is much faster on a Pi. ` : "") +
+      "To (re)format the disk in use, choose “Back to SD card” first (your files can be moved along), " +
+      "then format it here and use it again."));
   }
   $("#btn-storage-eject").hidden = !(r.target === "usb" && r.usb_mounted);
   $("#btn-storage-sd").hidden = r.target !== "usb";
