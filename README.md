@@ -141,14 +141,16 @@ compression workers with the RAM it finds.
 |---|---|---|---|---|
 | **Pi** | Pi 3B, 1 GB | Pi 4, 1 GB | Pi 4, 2 GB | **Pi 4, 4 GB** |
 | **Disk** | USB 2 only (~35 MB/s max) | USB 3 | USB 3 | USB 3 SSD or hard disk |
-| **Stacking (halo-free), per frame** | 16-22 s *(measured: 8 frames in 132-176 s)* | ~7 s *(measured: 18 frames in 126 s)* | ~7 s *(expected)* | ~7 s *(expected)* |
-| **PNG compression, per 12 MP image** | 10-15 s *(measured)* | ~6 s *(measured)* | ~6 s, 2 at a time *(expected)* | ~6 s, 3 at a time *(expected)* |
-| **Writing one raw frame** | 5-10 s on a cheap stick *(observed)*, ~1.5-2 s at best | 0.7-0.8 s *(measured, SSD on USB 2)* | well under 1 s | well under 1 s |
+| **Stacking (halo-free), per frame** | 16-22 s *(measured: 8 frames in 132-176 s)* | ~4 s *(measured: 21 frames in 78 s, USB 3 hard disk)* | ~4 s *(expected)* | ~4 s *(expected)* |
+| **PNG compression, per 12 MP image** | 10-15 s *(measured)* | 3.5-6 s *(measured)* | same, 2 at a time *(expected)* | same, 3 at a time *(expected)* |
+| **Writing one raw frame** | 5-10 s on a cheap stick *(observed)*, ~1.5-2 s at best | 0.1 s *(measured, USB 3 hard disk, ext4)* | 0.1 s | 0.1 s |
 | **Working while it processes** | slows down noticeably; one job at a time | fine; one job at a time | fine | smooth |
 
 Stacking itself runs one stack at a time on every model; more memory mostly
-lets compression and the rest of the app keep going alongside it. For the disk,
-sustained write speed matters, not the number on the box — see
+lets compression and the rest of the app keep going alongside it. The disk
+matters for stacking too (the stacker reads every frame several times): the same
+Pi 4 took ~7 s per frame with an SSD stuck at USB 2 on NTFS, ~4 s with a USB 3 hard
+disk on ext4. Sustained write speed matters, not the number on the box — see
 [Which disk?](docs/storage-and-upload.md#which-disk) (measured: a plain USB 3 hard
 disk ~0.8 s per frame, a cheap USB stick ~6 s).
 
