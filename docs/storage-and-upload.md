@@ -66,7 +66,7 @@ Measured on a Raspberry Pi 4:
 
 | Disk | File system | Sustained write | Per frame |
 |---|---|---|---|
-| 2.5" hard disk in a USB 3 enclosure | ext4 | ~50 MB/s (75-88 MB/s steady after a short dip) | ~0.8 s |
+| 2.5" old laptop hard disk in a USB 3 enclosure | as it came | ~50 MB/s (75-88 MB/s steady after a short dip) | ~0.8 s |
 | NVMe SSD in a USB enclosure (running at USB 2) | NTFS | — | 0.7-0.8 s |
 | Kingston DataTraveler 64 GB USB 3 stick ("60 MB/s") | exFAT | ~7 MB/s, jumping 3-17 MB/s | ~6 s |
 | same stick | ext4 | ~3 MB/s | 13+ s |
