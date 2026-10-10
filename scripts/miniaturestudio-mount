@@ -166,10 +166,12 @@ def usb_format():
     kind = run("lsblk", "-dno", "TYPE", device).stdout.strip()
     if kind == "disk" and run("lsblk", "-no", "NAME", device).stdout.split()[1:]:
         fail("pick a partition of this disk, not the whole disk")
+    # The app only asks this for a disk that is not the photo target (it checks that);
+    # after "Back to SD card" the disk can still be mounted at USB_MOUNT: unmount it.
     if is_mounted(USB_MOUNT):
         src = run("findmnt", "-n", "-o", "SOURCE", USB_MOUNT).stdout.strip()
         if src and os.path.realpath(src) == os.path.realpath(device):
-            fail("this disk is in use for photos — switch to the SD card first")
+            usb_unmount()
     for mp in run("findmnt", "-n", "-o", "TARGET", device).stdout.split():
         if run("umount", mp).returncode != 0:
             fail(f"the disk is busy ({mp}) — close what uses it and try again")
