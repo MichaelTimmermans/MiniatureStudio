@@ -3531,7 +3531,7 @@ def storage_busy():
     if save_queue.status()["pending"]:
         return "wait until the last captures are written"
     with jobs_lock:
-        if any(j["status"] in ("queued", "running") and j["kind"] in ("focus-stack", "move", "upload", "sweep")
+        if any(j["status"] in ("queued", "running") and j["kind"] in ("focus-stack", "move", "upload", "sweep", "speedtest")
                for j in jobs.values()):
             return "wait until stacking, uploads and moving have finished"
     if compressor.status()["active"]:
@@ -3602,6 +3602,86 @@ def api_storage_usb_format():
         save_config()
     log.warning("USB disk %s formatted as ext4 (%s)", path, label)
     return jsonify(ok=True, **result)
+
+
+SPEEDTEST_MB = 512        # enough to get past the fast write buffer of most USB sticks
+SPEEDTEST_STEP_MB = 64
+SPEEDTEST_MAX_S = 120
+FRAME_MB = 37             # one 12 MP RGB frame as uncompressed TIFF
+
+
+def run_speedtest(job, where):
+    """Write SPEEDTEST_MB of random data in steps (each flushed to the disk, so the
+    page cache cannot flatter it), then read it back, then delete it. The per-step
+    speeds show the drop of a stick whose small fast buffer is full."""
+    base = USB_MOUNT / "MiniatureStudio" if where == "usb" else data_dir("photos").parent
+    if where == "usb" and not os.path.ismount(USB_MOUNT):
+        raise RuntimeError("no USB disk mounted")
+    base.mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(base).free < (SPEEDTEST_MB + 512) * 2**20:
+        raise RuntimeError("not enough free space for the test (needs about 1 GB)")
+    path = base / ".speedtest.tmp"
+    chunk = os.urandom(4 * 2**20)  # random: controllers that compress cannot cheat
+    steps, written = [], 0
+    job_log(job, f"Writing {SPEEDTEST_MB} MB to {base} …")
+    started = step_start = time.time()
+    binary = getattr(os, "O_BINARY", 0)  # Windows would otherwise translate bytes
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | binary, 0o644)
+    try:
+        step = 0
+        while written < SPEEDTEST_MB * 2**20:
+            os.write(fd, chunk)
+            written += len(chunk)
+            step += len(chunk)
+            if step >= SPEEDTEST_STEP_MB * 2**20 or written >= SPEEDTEST_MB * 2**20:
+                os.fsync(fd)
+                now = time.time()
+                mbps = step / 1e6 / max(now - step_start, 1e-6)
+                steps.append(mbps)
+                job_log(job, f"{written >> 20:4d} MB  {mbps:6.1f} MB/s")
+                step, step_start = 0, now
+                if job.get("cancel"):
+                    raise RuntimeError("cancelled")
+                if now - started > SPEEDTEST_MAX_S:
+                    job_log(job, f"Stopped after {SPEEDTEST_MAX_S} s — the disk is slow")
+                    break
+        write_s = time.time() - started
+    finally:
+        os.close(fd)
+    try:
+        fd = os.open(path, os.O_RDONLY | binary)
+        try:
+            if hasattr(os, "posix_fadvise"):  # read from the disk, not from memory
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            read_start, total = time.time(), 0
+            while data := os.read(fd, 4 * 2**20):
+                total += len(data)
+            read_mbps = total / 1e6 / max(time.time() - read_start, 1e-6)
+        finally:
+            os.close(fd)
+    finally:
+        path.unlink(missing_ok=True)
+    write_mbps = written / 1e6 / max(write_s, 1e-6)
+    slowest = min(steps) if steps else write_mbps
+    result = {"where": where, "written_mb": written >> 20, "write_mbps": round(write_mbps, 1),
+              "first_mbps": round(steps[0], 1) if steps else None, "slowest_mbps": round(slowest, 1),
+              "read_mbps": round(read_mbps, 1), "seconds_per_frame": round(FRAME_MB * 1.048576 / max(slowest, 0.01), 1)}
+    job_log(job, f"Write {result['write_mbps']} MB/s (first {result['first_mbps']}, slowest "
+                 f"{result['slowest_mbps']}), read {result['read_mbps']} MB/s — about "
+                 f"{result['seconds_per_frame']} s per 12 MP frame once the disk is busy")
+    return result
+
+
+@app.route("/api/storage/speedtest", methods=["POST"])
+def api_storage_speedtest():
+    where = (request.get_json(silent=True) or {}).get("where", "sd")
+    if where not in ("sd", "usb"):
+        return jsonify(ok=False, error="where must be sd or usb"), 400
+    busy = storage_busy()
+    if busy:
+        return jsonify(ok=False, error=busy), 409
+    job = start_job("speedtest", "USB disk" if where == "usb" else "SD card", run_speedtest, where)
+    return jsonify(ok=True, job=job["id"])
 
 
 @app.route("/api/storage/sd", methods=["POST"])

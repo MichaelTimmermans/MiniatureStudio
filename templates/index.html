@@ -334,6 +334,12 @@
           <button id="btn-storage-sd" hidden>Back to SD card</button>
           <button id="btn-storage-forget" class="danger" hidden>Forget USB disk</button>
         </div>
+        <div class="row">
+          <span class="small">Speed test (writes 512 MB, then deletes it):</span>
+          <button id="btn-speed-sd" type="button">SD card</button>
+          <button id="btn-speed-usb" type="button" hidden>USB disk</button>
+        </div>
+        <div id="speed-result" class="small"></div>
         <div class="muted small">Photos and stacks go to a <code>MiniatureStudio</code> folder on the disk.
           ext4, exFAT, FAT32 and NTFS work — ext4 is by far the fastest on a Pi (NTFS uses a slow driver);
           “Format as ext4…” erases a disk and sets it up. The disk is mounted again at every boot and when you replug it.

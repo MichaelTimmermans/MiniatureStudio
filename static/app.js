@@ -1425,6 +1425,7 @@ async function loadStorage() {
       "To (re)format the disk in use, choose “Back to SD card” first (your files can be moved along), " +
       "then format it here and use it again."));
   }
+  $("#btn-speed-usb").hidden = !r.usb_mounted;
   $("#btn-storage-eject").hidden = !(r.target === "usb" && r.usb_mounted);
   $("#btn-storage-sd").hidden = r.target !== "usb";
   $("#btn-storage-forget").hidden = !(r.usb.configured && r.target !== "usb");
@@ -1465,6 +1466,36 @@ async function useUsb(disk, name) {
 }
 
 $("#btn-storage-refresh").addEventListener("click", () => guarded(loadStorage, "#storage-message"));
+
+// Disk speed test: progress per 64 MB step, then a plain summary.
+async function speedTest(where) {
+  await guarded(async () => {
+    const box = $("#speed-result");
+    const r = await api("/api/storage/speedtest", "POST", { where });
+    ["#btn-speed-sd", "#btn-speed-usb"].forEach((s) => { $(s).disabled = true; });
+    try {
+      for (;;) {
+        const job = await api(`/api/jobs/${r.job}`);
+        box.textContent = job.log.slice(-1)[0] || "Starting…";
+        if (job.status === "error") throw new Error(job.error);
+        if (job.status === "done") {
+          const s = job.result, disk = where === "usb" ? "USB disk" : "SD card";
+          const verdict = s.seconds_per_frame <= 1.5 ? "fast enough for stacks"
+            : s.seconds_per_frame <= 5 ? "usable, frames queue up in long stacks" : "too slow for stacks";
+          box.replaceChildren(el("strong", {}, `${disk}: `),
+            `write ${s.write_mbps} MB/s (first ${s.first_mbps}, slowest ${s.slowest_mbps}), read ${s.read_mbps} MB/s — `,
+            `about ${s.seconds_per_frame} s per 12 MP frame once busy: `, el("strong", {}, verdict));
+          return;
+        }
+        await new Promise((res) => setTimeout(res, 1000));
+      }
+    } finally {
+      ["#btn-speed-sd", "#btn-speed-usb"].forEach((s) => { $(s).disabled = false; });
+    }
+  }, "#speed-result");
+}
+$("#btn-speed-sd").addEventListener("click", () => speedTest("sd"));
+$("#btn-speed-usb").addEventListener("click", () => speedTest("usb"));
 $("#btn-storage-eject").addEventListener("click", () => guarded(async () => {
   await api("/api/storage/eject", "POST", {});
   say("You can unplug the disk now. Captures are paused until it is plugged back in (or you switch to the SD card).",
