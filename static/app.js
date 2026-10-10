@@ -347,7 +347,8 @@ async function loadJobs() {
         j.kind === "compress" && j.total ? el("span", { class: "muted small" },
           `${j.done + j.failed}/${j.total} files`) : null,
         el("span", { class: "badge " + ({ done: "ok", error: "warn", running: "", queued: "" })[j.status] }, j.status),
-        (j.status === "running" || j.status === "queued") && j.kind !== "upload"
+        // Uploads can only be cancelled while they wait, never halfway through a transfer.
+        (j.status === "queued" || (j.status === "running" && j.kind !== "upload"))
           ? el("button", { onclick: () => api(`/api/jobs/${j.id}/cancel`, "POST", {}).then(loadJobs) }, "Cancel") : null,
         el("button", { onclick: async () => {
           const full = await api(`/api/jobs/${j.id}`);

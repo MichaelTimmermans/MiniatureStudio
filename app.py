@@ -1670,13 +1670,14 @@ def _upload_worker():
         job, runner = upload_queue.get()
         noted = False
         stack = job["name"][len("stack:"):] if job["name"].startswith("stack:") else None
-        while foreground_busy() or focus_stack_running() or move_running() or (
-                stack and compressor.converting(stack)):
+        while not job.get("cancel") and (foreground_busy() or focus_stack_running() or move_running() or (
+                stack and compressor.converting(stack))):
             if not noted:
                 job_log(job, "Waiting until capturing, stacking and compressing are done…")
                 noted = True
             time.sleep(3)
-        runner()
+        if not job.get("cancel"):  # cancelled while waiting: never starts
+            runner()
 
 
 def stack_queue_position(job_id):
@@ -2936,6 +2937,8 @@ def api_job_cancel(job_id):
     if job["kind"] == "compress":
         compressor.cancel_group(job["name"])
         return jsonify(ok=True)
+    if job["kind"] == "upload" and job["status"] != "queued":
+        return jsonify(ok=False, error="an upload can only be cancelled before it starts"), 409
     job["cancel"] = True
     if job["status"] == "queued":
         with jobs_lock:
