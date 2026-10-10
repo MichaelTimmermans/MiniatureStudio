@@ -4009,8 +4009,13 @@ def api_update_apply():
     with jobs_lock:
         # Compression resumes by itself after the restart, so it does not block an update.
         busy = [j for j in jobs.values() if j["status"] in ("queued", "running") and j["kind"] != "compress"]
+    # force: the user confirmed that these jobs stop. Everything recovers after the
+    # restart (an unprocessed stack stays unprocessed, compression resumes); only an
+    # interrupted upload has to be started again.
+    if busy and not (request.get_json(silent=True) or {}).get("force"):
+        return jsonify(ok=False, error="wait until running jobs have finished, or confirm to stop them"), 409
     if busy:
-        return jsonify(ok=False, error="wait until running jobs have finished"), 409
+        log.warning("Update: stopping %s", ", ".join(f"{j['kind']} {j['name']}" for j in busy))
     return jsonify(ok=True, job=start_job("update", "miniaturestudio", run_self_update)["id"])
 
 

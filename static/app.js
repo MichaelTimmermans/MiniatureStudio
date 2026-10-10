@@ -1599,8 +1599,16 @@ $("#btn-update-check").addEventListener("click", () => guarded(async () => {
     : el("div", {}, `${r.behind} new change(s):`, el("pre", { class: "log" }, r.changes.join("\n"))));
 }, "#update-info"));
 $("#btn-update-apply").addEventListener("click", () => guarded(async () => {
-  if (!confirm("Install the update? The app restarts automatically afterwards.")) return;
-  const r = await api("/api/update/apply", "POST", {});
+  // Jobs that would block the update (compression resumes by itself afterwards).
+  const busy = (await api("/api/jobs")).jobs.filter((j) => ["queued", "running"].includes(j.status) && j.kind !== "compress");
+  const question = busy.length
+    ? "These jobs are still running and will be stopped:\n\n" +
+      busy.map((j) => `• ${j.kind} ${j.name} (${j.status})`).join("\n") + "\n\n" +
+      "An unprocessed stack stays unprocessed (process it again later); an upload has to be started again.\n\n" +
+      "Stop them and install the update? The app restarts automatically afterwards."
+    : "Install the update? The app restarts automatically afterwards.";
+  if (!confirm(question)) return;
+  const r = await api("/api/update/apply", "POST", { force: busy.length > 0 });
   $("#btn-update-apply").disabled = true;
   const log = el("pre", { class: "log" });
   $("#update-info").replaceChildren("Updating…", log);
