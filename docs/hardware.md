@@ -7,8 +7,9 @@
 What this app is developed and used with (the example photos in the README
 were made with it):
 
-- **Raspberry Pi 3B** (1 GB RAM), Raspberry Pi OS Trixie, powered through a
-  power HAT fed by 12 V.
+- **Raspberry Pi 4 Model B** (1 GB RAM), Raspberry Pi OS Trixie; earlier the
+  **Raspberry Pi 3B** (1 GB) with the same SD card — moving the card over just
+  works. Powered through a power HAT fed by 12 V.
 - **Raspberry Pi HQ Camera** (Sony IMX477, 12.3 MP, 1/2.3").
 - **5-50 mm C-mount varifocal lens** (1/2.3", 12 MP rated) on the HQ camera's
   C-CS adapter ring, plus a macro/extension ring for close focus. Zoom first,
@@ -24,7 +25,7 @@ Also tested:
 - the **Arducam 16 MP (IMX519)** autofocus camera — autofocus and the automatic
   lens sweep work (the app adds the autofocus tuning libcamera lacks for it).
 
-Not yet tested on real hardware: Arducam 64 MP, Raspberry Pi 4/5.
+Not yet tested on real hardware: Arducam 64 MP, Raspberry Pi 5.
 
 ![The booth: open front with the lit interior and the Pi at the back](booth/booth-open.jpg)
 
