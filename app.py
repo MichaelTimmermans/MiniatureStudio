@@ -3666,12 +3666,17 @@ def run_speedtest(job, where):
         path.unlink(missing_ok=True)
     write_mbps = written / 1e6 / max(write_s, 1e-6)
     slowest = min(steps) if steps else write_mbps
+    # What a long stack sees: the average after the first step (the first step mostly
+    # lands in the disk's fast buffer; the slowest single step is too pessimistic).
+    later = steps[1:] or steps
+    sustained = len(later) * SPEEDTEST_STEP_MB * 1.048576 / sum(SPEEDTEST_STEP_MB * 1.048576 / s for s in later)         if later else write_mbps
     result = {"where": where, "written_mb": written >> 20, "write_mbps": round(write_mbps, 1),
               "first_mbps": round(steps[0], 1) if steps else None, "slowest_mbps": round(slowest, 1),
-              "read_mbps": round(read_mbps, 1), "seconds_per_frame": round(FRAME_MB * 1.048576 / max(slowest, 0.01), 1)}
-    job_log(job, f"Write {result['write_mbps']} MB/s (first {result['first_mbps']}, slowest "
-                 f"{result['slowest_mbps']}), read {result['read_mbps']} MB/s — about "
-                 f"{result['seconds_per_frame']} s per 12 MP frame once the disk is busy")
+              "sustained_mbps": round(sustained, 1), "read_mbps": round(read_mbps, 1),
+              "seconds_per_frame": round(FRAME_MB * 1.048576 / max(sustained, 0.01), 1)}
+    job_log(job, f"Write {result['write_mbps']} MB/s (first {result['first_mbps']}, sustained "
+                 f"{result['sustained_mbps']}, slowest {result['slowest_mbps']}), read {result['read_mbps']} MB/s — "
+                 f"about {result['seconds_per_frame']} s per 12 MP frame in a long stack")
     return result
 
 

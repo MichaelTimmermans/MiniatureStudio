@@ -1487,8 +1487,8 @@ async function speedTest(where) {
           const verdict = s.seconds_per_frame <= 1.5 ? "fast enough for stacks"
             : s.seconds_per_frame <= 5 ? "usable, frames queue up in long stacks" : "too slow for stacks";
           box.replaceChildren(el("strong", {}, `${disk}: `),
-            `write ${s.write_mbps} MB/s (first ${s.first_mbps}, slowest ${s.slowest_mbps}), read ${s.read_mbps} MB/s — `,
-            `about ${s.seconds_per_frame} s per 12 MP frame once busy: `, el("strong", {}, verdict));
+            `write ${s.sustained_mbps ?? s.write_mbps} MB/s sustained (first 64 MB ${s.first_mbps}, slowest ${s.slowest_mbps}), read ${s.read_mbps} MB/s — `,
+            `about ${s.seconds_per_frame} s per 12 MP frame in a long stack: `, el("strong", {}, verdict));
           return;
         }
         await new Promise((res) => setTimeout(res, 1000));
