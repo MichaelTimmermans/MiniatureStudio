@@ -176,9 +176,13 @@ def usb_format():
     old_uuid = run("blkid", "-s", "UUID", "-o", "value", device).stdout.strip()
     uid = int(os.environ.get("SUDO_UID", "1000"))
     gid = int(os.environ.get("SUDO_GID", "1000"))
-    # lazy init + nodiscard: seconds instead of minutes, also on a big SSD over USB 2.
-    r = run("mkfs.ext4", "-F", "-q", "-L", label, "-m", "0",
-            "-E", f"lazy_itable_init=1,lazy_journal_init=1,nodiscard,root_owner={uid}:{gid}", device)
+    # Everything initialised now (no lazy init): a "lazy" ext4 keeps zeroing its inode
+    # tables in the background after the first mount, which on a USB stick slowed
+    # frame writes to ~1 MB/s for a long time. One inode per 256 KB (photos are big
+    # files) keeps those tables small, so this takes seconds. Discard tells flash the
+    # whole disk is free (quick, or skipped when the stick does not support it).
+    r = run("mkfs.ext4", "-F", "-q", "-L", label, "-m", "0", "-i", "262144",
+            "-E", f"lazy_itable_init=0,lazy_journal_init=0,root_owner={uid}:{gid}", device)
     if r.returncode != 0:
         fail("formatting failed: " + ((r.stderr or r.stdout).strip() or "unknown error"))
     run("udevadm", "settle")

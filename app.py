@@ -2242,47 +2242,47 @@ def media(kind, relpath):
 
 @app.route("/download/stack/<name>.zip")
 def download_stack(name):
-    """Whole stack folder as a zip (stored, PNGs are already compressed)."""
-    import tempfile
+    """Whole stack folder as a zip, streamed straight to the browser (stored: images
+    are already compressed). Nothing is written to disk, so it starts at once, needs
+    no free space and never competes with captures for a slow USB stick."""
     import zipfile
 
     stack_dir = safe_child(data_dir("stacks"), name)
-    # On disk next to the data, not /tmp (tmpfs = RAM on newer Pi OS).
-    tmp_dir = data_dir("stacks") / ".tmp"
-    tmp_dir.mkdir(exist_ok=True)
-    for stale in tmp_dir.glob("stack_*.zip"):
-        if time.time() - stale.stat().st_mtime > 3600:
-            try:
-                stale.unlink()
-            except OSError:
-                pass
-    files = [f for f in sorted(stack_dir.iterdir()) if f.is_file()]
-    need = sum(f.stat().st_size for f in files)
-    usage = shutil.disk_usage(tmp_dir)
-    if usage.free < need + 200 * 2**20 or (usage.total - usage.free + need) * 100 / usage.total > 95:
-        return jsonify(ok=False, error=f"not enough free space to build the zip ({need / 2**30:.1f} GB) — "
-                                       "download the result or the frames one by one"), 507
-    tmp = tempfile.NamedTemporaryFile(prefix="stack_", suffix=".zip", delete=False, dir=tmp_dir)
-    tmp.close()
-    try:
-        with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_STORED) as zf:
-            for f in files:
-                if f.exists():  # a TIFF may have just been compressed to PNG
-                    zf.write(f, f"{name}/{f.name}")
-                elif f.with_suffix(".png").exists():
-                    zf.write(f.with_suffix(".png"), f"{name}/{f.with_suffix('.png').name}")
-    except Exception:
-        os.unlink(tmp.name)
-        raise
-    response = send_file(tmp.name, as_attachment=True, download_name=f"{name}.zip")
-    def cleanup():
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass  # still open (Windows); removed by the stale sweep above
+    if not stack_dir.is_dir():
+        abort(404)
+    files = [f for f in sorted(stack_dir.iterdir()) if f.is_file() and not f.name.startswith(".")]
 
-    response.call_on_close(cleanup)
-    return response
+    class Pipe(io.RawIOBase):
+        """Write end the zip writes into; the generator hands the bytes to Flask."""
+        def __init__(self):
+            self.chunks = []
+        def writable(self):
+            return True
+        def write(self, b):
+            self.chunks.append(bytes(b))
+            return len(b)
+        def take(self):
+            data, self.chunks = b"".join(self.chunks), []
+            return data
+
+    def generate():
+        pipe = Pipe()
+        with zipfile.ZipFile(pipe, "w", zipfile.ZIP_STORED) as zf:
+            for f in files:
+                if not f.exists() and f.with_suffix(".png").exists():
+                    f = f.with_suffix(".png")  # a TIFF that was just compressed
+                if not f.exists():
+                    continue
+                with open(f, "rb") as src, zf.open(f"{name}/{f.name}", "w", force_zip64=True) as dst:
+                    while chunk := src.read(1 << 20):  # 1 MB at a time: little RAM on a Pi
+                        dst.write(chunk)
+                        yield pipe.take()
+                yield pipe.take()
+        yield pipe.take()  # central directory
+
+    return Response(generate(), mimetype="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}.zip"',
+                             "Cache-Control": "no-store"})
 
 
 @app.route("/thumb/<kind>/<path:relpath>")
@@ -4052,6 +4052,11 @@ def main():
     save_queue = SaveQueue(int(CONFIG["camera"].get("save_queue", 2)))
     compressor = Compressor(BASE_DIR / ".compress_queue.json", int(CONFIG["camera"].get("compress_workers", 0)))
     prepare_af_tuning()
+    try:  # zips used to be built in stacks/.tmp; they are streamed now
+        for stale in (data_dir("stacks") / ".tmp").glob("stack_*.zip"):
+            stale.unlink()
+    except (OSError, StorageUnavailable):
+        pass
     try:
         camera = open_camera()
     except Exception as exc:
