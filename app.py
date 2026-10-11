@@ -22,7 +22,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, Response, abort, jsonify, render_template, request, send_file
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
@@ -177,10 +177,11 @@ def unique_stem(directory, stem, ext):
     return candidate
 
 
-def safe_child(directory, name):
-    """Resolve ``name`` inside ``directory``; 404 on anything that escapes it."""
+def safe_child(directory, name, allow_missing=False):
+    """Resolve ``name`` inside ``directory``; 404 on anything that escapes it (and on
+    a missing file, unless the caller handles that itself)."""
     target = (directory / name).resolve()
-    if directory.resolve() not in target.parents or not target.exists():
+    if directory.resolve() not in target.parents or (not allow_missing and not target.exists()):
         abort(404)
     return target
 
@@ -2221,13 +2222,36 @@ def stream():
 MEDIA_KINDS = {"photos": "photos", "stacks": "stacks"}
 
 
+def replacement_image(path):
+    """The same image under another extension: a TIFF that was compressed (and
+    deleted) meanwhile, or the TIFF of a compressed copy. Compressed first."""
+    if path.suffix.lower() not in IMAGE_EXTS:
+        return None
+    for ext in (".png", ".jpg", ".jpeg", ".tif", ".tiff"):
+        alt = path.with_suffix(ext)
+        if alt != path and alt.is_file():
+            return alt
+    return None
+
+
+def redirect_to_replacement(kind, relpath, path):
+    """A page opened before compression links to the old name: send the browser to
+    the file as it is now (same query, e.g. ?download=1), instead of a 404."""
+    alt = replacement_image(path)
+    if not alt:
+        abort(404)
+    new_rel = relpath[: len(relpath) - len(path.name)] + alt.name
+    target = f"{request.path[: len(request.path) - len(relpath)]}{new_rel}"
+    return redirect(target + (f"?{request.query_string.decode()}" if request.query_string else ""))
+
+
 @app.route("/media/<kind>/<path:relpath>")
 def media(kind, relpath):
     if kind not in MEDIA_KINDS:
         abort(404)
-    path = safe_child(data_dir(kind), relpath)
+    path = safe_child(data_dir(kind), relpath, allow_missing=True)
     if not path.is_file():
-        abort(404)
+        return redirect_to_replacement(kind, relpath, path)
     if request.args.get("as") == "png" and path.suffix.lower() in (".tif", ".tiff"):
         # Compress on download (TIFF storage mode). Takes ~10-15 s on a Pi 3B.
         from PIL import Image
@@ -2291,9 +2315,11 @@ def thumb(kind, relpath):
     if kind not in MEDIA_KINDS:
         abort(404)
     base = data_dir(kind)
-    src = safe_child(base, relpath)
+    src = safe_child(base, relpath, allow_missing=True)
     if src.suffix.lower() not in IMAGE_EXTS:
         abort(404)
+    if not src.is_file():
+        return redirect_to_replacement(kind, relpath, src)
     # size=large: a screen-sized JPEG for the viewer (browsers cannot show TIFF).
     large = request.args.get("size") == "large"
     box = (2048, 1536) if large else (480, 360)
