@@ -2265,6 +2265,29 @@ def media(kind, relpath):
     return send_file(path, as_attachment=request.args.get("download") == "1")
 
 
+@app.route("/api/link_check")
+def api_link_check():
+    """Does the file behind a /media, /thumb or stack-zip link still exist (or has a
+    replacement)? Lets the page show a message instead of a bare 404 page."""
+    from urllib.parse import unquote, urlparse
+
+    path = unquote(urlparse(request.args.get("url", "")).path)
+    found = False
+    try:
+        if m := re.fullmatch(r"/(?:media|thumb)/(\w+)/(.+)", path):
+            kind, rel = m.groups()
+            if kind in MEDIA_KINDS:
+                target = safe_child(data_dir(kind), rel, allow_missing=True)
+                found = target.is_file() or replacement_image(target) is not None
+        elif m := re.fullmatch(r"/download/stack/(.+)\.zip", path):
+            found = safe_child(data_dir("stacks"), m.group(1), allow_missing=True).is_dir()
+        else:
+            found = True  # not a file link: nothing to check
+    except Exception:  # abort(404) from safe_child, storage missing, ...
+        found = False
+    return jsonify(ok=True, found=found)
+
+
 @app.route("/download/stack/<name>.zip")
 def download_stack(name):
     """Whole stack folder as a zip, streamed straight to the browser (stored: images
@@ -4133,10 +4156,26 @@ def api_update_apply():
     return jsonify(ok=True, job=start_job("update", "miniaturestudio", run_self_update)["id"])
 
 
+NOT_FOUND_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Not found — MiniatureStudio</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#111316;color:#e6e8eb;
+font:15px system-ui,sans-serif}.box{max-width:420px;padding:24px;border:1px solid #343a43;border-radius:8px;
+background:#1b1e23}h1{font-size:18px;margin:0 0 8px}p{color:#8c949e;margin:0 0 16px}
+a{display:inline-block;padding:6px 12px;border:1px solid #4f9cf5;border-radius:6px;color:#fff;
+background:#4f9cf5;text-decoration:none;margin-right:6px}a.plain{background:none;color:#4f9cf5}</style></head>
+<body><div class="box"><h1>File not found</h1><p>This file no longer exists — it may have been
+deleted, compressed into another format or moved to another disk. Refresh the page you came from
+to see the current files.</p><a href="/">Open MiniatureStudio</a>
+<a class="plain" href="javascript:history.back()">Go back</a></div></body></html>"""
+
+
 @app.errorhandler(Exception)
 def handle_error(exc):
     from werkzeug.exceptions import HTTPException
     if isinstance(exc, HTTPException):
+        # A page instead of a bare 404 when the browser navigates to a missing file.
+        if exc.code == 404 and not request.path.startswith("/api/") and "text/html" in request.headers.get("Accept", ""):
+            return NOT_FOUND_PAGE, 404
         return exc
     if isinstance(exc, StorageUnavailable):
         return jsonify(ok=False, error=str(exc), storage_unavailable=True), 503

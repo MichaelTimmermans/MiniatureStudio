@@ -1716,3 +1716,30 @@ function restoreView() {
   // Resume watching jobs that were running before a page reload.
   try { (await api("/api/jobs")).jobs.filter((j) => ["queued", "running"].includes(j.status)).forEach((j) => watchJob(j.id)); } catch (_) { /* ignore */ }
 })();
+
+// ---------------------------------------------------------------- missing files
+// A file link on a page that was opened earlier can point to a file that was deleted,
+// compressed or moved meanwhile. Check first and say so, instead of a bare 404 page.
+function notice(text) {
+  $("#notice-text").textContent = text;
+  $("#notice").showModal();
+}
+$("#notice-ok").addEventListener("click", () => $("#notice").close());
+document.addEventListener("click", async (e) => {
+  const a = e.target.closest("a[href]");
+  if (!a || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  const href = a.getAttribute("href");
+  if (!/^\/(media|thumb|download\/stack)\//.test(href)) return;
+  e.preventDefault();
+  let found = true;
+  try { found = (await api(`/api/link_check?url=${encodeURIComponent(href)}`)).found; } catch (_) { /* let the link try */ }
+  if (!found) {
+    notice("File not found. It may have been deleted, compressed into another format or moved to another disk. " +
+           "The list is refreshed now.");
+    if (!$("#tab-stacks").hidden) loadStacks();
+    if (!$("#tab-gallery").hidden) loadGallery();
+    return;
+  }
+  if (a.target === "_blank") window.open(href, "_blank", "noopener");
+  else window.location.href = href;  // downloads start without leaving the page
+});

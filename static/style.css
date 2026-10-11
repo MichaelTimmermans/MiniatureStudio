@@ -226,3 +226,6 @@ details.howto li { margin-bottom: 4px; }
 
 .ok-text { color: var(--ok); }
 #exposure-result button { margin-top: 4px; }
+
+#notice { max-width: 420px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
+#notice::backdrop { background: rgba(0, 0, 0, .5); }
