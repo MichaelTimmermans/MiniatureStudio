@@ -130,33 +130,50 @@ varifocal lens, in a black booth — the 3D-printable parts are on Thingiverse:
 (IMX519) autofocus camera, with autofocus and lens sweep, and a USB webcam
 (Sony IMX179) work too. Details and other cameras: [Hardware](docs/hardware.md).
 
-## Which Raspberry Pi?
+## Hardware: Raspberry Pi and storage
 
-MiniatureStudio runs on a Pi 3B, but 12 MP stacking is heavy work. **Memory
-matters most** (1 GB means swapping while stacking and compressing), then
-**USB 3** for the disk, then CPU speed. The app scales its stacking threads and
-compression workers with the RAM it finds.
+12 MP focus stacking is heavy work, and **the disk matters as much as the Pi**.
+A stack writes one ~37 MB frame after another and the stacker reads every frame
+several times, so a slow disk makes even a fast Pi feel sluggish — and a good disk
+makes the whole app noticeably smoother.
 
-| | Absolute minimum | Tested | Proper minimum | Recommended |
+### Raspberry Pi
+
+| Pi | Status | Stacking (halo-free), per frame | PNG compression, per 12 MP image | Notes |
 |---|---|---|---|---|
-| **Pi** | Pi 3B, 1 GB | Pi 4, 1 GB | Pi 4, 2 GB | **Pi 4, 4 GB** |
-| **Disk** | USB 2 only (~35 MB/s max) | USB 3 | USB 3 | USB 3 SSD or hard disk |
-| **Stacking (halo-free), per frame** | 16-22 s *(measured: 8 frames in 132-176 s)* | ~4 s *(measured: 21 frames in 78 s, USB 3 hard disk)* | ~4 s *(expected)* | ~4 s *(expected)* |
-| **PNG compression, per 12 MP image** | 10-15 s *(measured)* | 3.5-6 s *(measured)* | same, 2 at a time *(expected)* | same, 3 at a time *(expected)* |
-| **Writing one raw frame** | 5-10 s on a cheap stick *(observed)*, ~1.5-2 s at best | 0.1 s *(measured, USB 3 hard disk, ext4)* | 0.1 s | 0.1 s |
-| **Working while it processes** | slows down noticeably; one job at a time | fine; one job at a time | fine | smooth |
+| Pi 3B, 1 GB | **tested** | 16-22 s *(8 frames in 132-176 s)* | 10-15 s | Works. USB 2 only (~35 MB/s for the disk); slows down noticeably while it processes. |
+| Pi 4, 1 GB | **tested** | ~4 s *(21 frames in 78 s, with the hard disk below)* | 3.5-6 s | Clearly smoother. USB 3; 1 GB still means one job at a time. |
+| Pi 4, 4 GB | not tested — better | ~4 s *(expected)* | same, 3 at a time *(expected)* | More memory: no swapping, compression and the app keep going while it stacks. |
+| Pi 5, 4 GB | not tested — best | ~2 s *(expected)* | faster *(expected)* | Fastest; can use an NVMe SSD. Needs a different camera cable, a 27 W power supply and active cooling. |
 
-Stacking itself runs one stack at a time on every model; more memory mostly
-lets compression and the rest of the app keep going alongside it. The disk
-matters for stacking too (the stacker reads every frame several times): the same
-Pi 4 took ~7 s per frame with an SSD stuck at USB 2 on NTFS, ~4 s with a USB 3 hard
-disk on ext4. Sustained write speed matters, not the number on the box — see
-[Which disk?](docs/storage-and-upload.md#which-disk) (measured: a plain USB 3 hard
-disk ~0.8 s per frame, a cheap USB stick ~6 s).
+8 GB is not needed. The app scales its stacking threads and compression workers
+with the memory it finds. Moving the SD card from a Pi 3B to a Pi 4 just works.
 
-A **Pi 5 (4 GB)** is faster still (stacking roughly twice a Pi 4) and can use an
-NVMe SSD, but needs a different camera cable, a 27 W power supply and active
-cooling. 8 GB is not needed. More in [Hardware](docs/hardware.md#raspberry-pi-3b-notes).
+### Storage
+
+What counts is the **sustained** write speed: the speed printed on a USB stick is
+usually only its small fast buffer, which is full after a few frames. Measure a
+disk with **Settings → Storage → Speed test**. Tested so far:
+
+| Disk | File system | Pi | Sustained write | Per frame in a stack | Verdict |
+|---|---|---|---|---|---|
+| Cheap 4 GB USB stick | FAT32 | Pi 3B (USB 2) | — | slowed down after ~4 frames *(observed)* | too slow |
+| Kingston DataTraveler 64 GB USB 3 stick ("60 MB/s" on the box) | ext4 | Pi 4 | ~3 MB/s | 20-30 s | too slow |
+| the same stick | exFAT | Pi 4 | ~7 MB/s (jumping 3-17) | ~6 s *(from the speed test)* | too slow for stacks |
+| NVMe SSD in a USB enclosure (at USB 2 because of the cable) | NTFS | Pi 4 | — | 0.7-0.8 s; stacking ~7 s per frame | good |
+| **Old 2.5" laptop hard disk in a USB 3 enclosure** | **ext4** | Pi 4 | **~50 MB/s (75-88 steady)** | **0.1 s; stacking ~4 s per frame** | **best so far** |
+
+For comparison, the Kingston stick on a Windows laptop: 18 MB/s write (H2testw).
+
+- **Use a hard disk or an SSD, formatted as ext4.** An old laptop disk you were
+  about to throw away works great; a small one is plenty.
+- **USB sticks are finicky**: fine for occasional photos, too slow for stacks. If
+  you use one, format it as **exFAT** — ext4's journal makes cheap sticks much slower.
+- **Avoid NTFS** on a Pi: it works, but goes through a slow driver.
+
+More (formatting, power and vibration of hard disks):
+[Which disk?](docs/storage-and-upload.md#which-disk) ·
+[Hardware](docs/hardware.md#raspberry-pi-3b-notes).
 
 ## License
 
